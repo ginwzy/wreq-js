@@ -684,6 +684,67 @@ mod tests {
         assert_ne!(base_config, read_config);
         assert_ne!(connect_config, read_config);
     }
+
+}
+
+/// Get cookies from a session's jar that would be sent to the given URL
+/// (RFC 6265 domain/path matching, secure filtering, expiry check).
+pub fn get_session_cookies(session_id: &str, url: &str) -> Result<Vec<(String, String)>> {
+    use wreq::cookie::CookieStore;
+
+    let jar = SESSION_MANAGER.jar_for(session_id)?;
+    let uri: wreq::Uri = url.parse().with_context(|| format!("Invalid URL: {}", url))?;
+    let cookie_header = jar.cookies(&uri);
+
+    let pairs = match cookie_header {
+        wreq::cookie::Cookies::Compressed(header_value) => {
+            let s = header_value.to_str().unwrap_or("");
+            parse_cookie_pairs(s)
+        }
+        wreq::cookie::Cookies::Uncompressed(values) => {
+            let mut all = Vec::new();
+            for hv in &values {
+                if let Ok(s) = hv.to_str() {
+                    all.extend(parse_cookie_pairs(s));
+                }
+            }
+            all
+        }
+        wreq::cookie::Cookies::Empty => Vec::new(),
+        _ => Vec::new(),
+    };
+    Ok(pairs)
+}
+
+fn parse_cookie_pairs(s: &str) -> Vec<(String, String)> {
+    s.split("; ")
+        .filter_map(|pair| {
+            let mut parts = pair.splitn(2, '=');
+            let name = parts.next()?.trim();
+            let value = parts.next().unwrap_or("").trim();
+            if name.is_empty() {
+                None
+            } else {
+                Some((name.to_owned(), value.to_owned()))
+            }
+        })
+        .collect()
+}
+
+/// Add a cookie to a session's jar, scoped to the domain/path of the given URL.
+pub fn set_session_cookie(session_id: &str, name: &str, value: &str, url: &str) -> Result<()> {
+    use wreq::cookie::IntoCookie;
+
+    let cookie_str = format!("{}={}", name, value);
+    let cookie = cookie_str
+        .as_str()
+        .into_cookie()
+        .ok_or_else(|| anyhow!("Invalid cookie string: {}", cookie_str))?;
+    let uri: wreq::Uri = url.parse().with_context(|| format!("Invalid URL: {}", url))?;
+
+    let jar = SESSION_MANAGER.jar_for(session_id)?;
+    jar.add(cookie, uri);
+    Ok(())
 }
 
 /// Get the cookie jar for a session. Used by websocket to share cookies.
