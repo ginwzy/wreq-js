@@ -92,6 +92,7 @@ interface NativeRequestOptions {
   disableDefaultHeaders?: boolean;
   insecure?: boolean;
   transportId?: string;
+  compress?: boolean;
 }
 
 let nativeBinding: {
@@ -1725,6 +1726,9 @@ export async function fetch(input: string | URL | Request, init?: WreqRequestIni
   }
   if (config.disableDefaultHeaders !== undefined) {
     requestOptions.disableDefaultHeaders = config.disableDefaultHeaders;
+  }
+  if (config.compress !== undefined) {
+    requestOptions.compress = config.compress;
   }
 
   if (headerTuples && headerTuples.length > 0) {

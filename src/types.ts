@@ -246,6 +246,15 @@ export interface RequestInit {
    * @default false
    */
   insecure?: boolean;
+
+  /**
+   * Whether to automatically decompress response bodies. When set to `false`,
+   * the raw compressed response body is returned as-is and the `Content-Encoding`
+   * header is preserved. Useful for proxy scenarios where the downstream client
+   * handles decompression.
+   * @default true
+   */
+  compress?: boolean;
 }
 
 /**

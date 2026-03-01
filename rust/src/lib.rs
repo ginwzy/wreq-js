@@ -260,6 +260,12 @@ fn js_object_to_request_options(
         .map(|v| v.value(cx))
         .unwrap_or(false);
 
+    let compress = obj
+        .get_opt(cx, "compress")?
+        .and_then(|v: Handle<JsValue>| v.downcast::<JsBoolean, _>(cx).ok())
+        .map(|v| v.value(cx))
+        .unwrap_or(true);
+
     let transport_id = obj
         .get_opt(cx, "transportId")?
         .and_then(|v: Handle<JsValue>| v.downcast::<JsString, _>(cx).ok())
@@ -311,6 +317,7 @@ fn js_object_to_request_options(
         pool_max_size,
         connect_timeout,
         read_timeout,
+        compress,
     })
 }
 

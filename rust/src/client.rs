@@ -76,6 +76,7 @@ pub struct RequestOptions {
     pub pool_max_size: Option<u32>,
     pub connect_timeout: Option<u64>,
     pub read_timeout: Option<u64>,
+    pub compress: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -393,6 +394,7 @@ async fn make_request_inner(
         timeout,
         redirect,
         disable_default_headers,
+        compress,
         ..
     } = options;
 
@@ -433,6 +435,11 @@ async fn make_request_inner(
     // Disable default headers if requested to prevent emulation headers from being appended
     if disable_default_headers {
         request = request.default_headers(false);
+    }
+
+    // Disable automatic decompression when compress is false
+    if !compress {
+        request = request.gzip(false).brotli(false).deflate(false).zstd(false);
     }
 
     // Apply redirect policy
@@ -663,6 +670,7 @@ mod tests {
             pool_max_size: None,
             connect_timeout: None,
             read_timeout: None,
+            compress: true,
         }
     }
 

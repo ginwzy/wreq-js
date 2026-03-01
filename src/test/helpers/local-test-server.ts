@@ -6,8 +6,10 @@ import type { AddressInfo, Socket } from "node:net";
 import { dirname, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { gzipSync } from "node:zlib";
 
 const WS_MAGIC_STRING = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+const GZIP_RESPONSE = gzipSync(JSON.stringify({ message: "compressed", gzipped: true }));
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CERTS_DIR = resolve(__dirname, "certs");
@@ -231,6 +233,15 @@ export async function startLocalTestServer(): Promise<LocalTestServer> {
         headers: canonicalizeHeaders(req),
         rawHeaders: req.rawHeaders,
       });
+    }
+
+    if (path === "/gzip") {
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "application/json");
+      res.setHeader("Content-Encoding", "gzip");
+      res.setHeader("Content-Length", GZIP_RESPONSE.length);
+      res.end(GZIP_RESPONSE);
+      return;
     }
 
     if (req.method === "TRACE") {
