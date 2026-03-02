@@ -223,7 +223,7 @@ const bodyHandleFinalizer =
 
 const DEFAULT_BROWSER: BrowserProfile = "chrome_142";
 const DEFAULT_OS: EmulationOS = "macos";
-const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+const DEFAULT_REQUEST_TIMEOUT_MS = 300_000;
 const SUPPORTED_OSES: readonly EmulationOS[] = ["windows", "macos", "linux", "android", "ios"];
 const UTF8_DECODER = new TextDecoder("utf-8");
 
