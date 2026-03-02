@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { STATUS_CODES } from "node:http";
 import { createRequire } from "node:module";
+import { Readable } from "node:stream";
 import { ReadableStream } from "node:stream/web";
 import type {
   BodyInit,
@@ -848,6 +849,19 @@ export class Response {
       contentType ? { headers: { "content-type": contentType } } : undefined,
     );
     return response.formData();
+  }
+
+  readable(): Readable {
+    this.assertBodyAvailable();
+    this.bodyUsed = true;
+
+    const stream = this.body;
+
+    if (stream === null) {
+      return Readable.from([]);
+    }
+
+    return Readable.fromWeb(stream as ReadableStream);
   }
 
   clone(): Response {
