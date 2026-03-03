@@ -1,108 +1,72 @@
-name: 🐛 Bug Report
-description: Report a bug or unexpected behavior
-title: '[Bug]: '
-labels: ['bug', 'needs-triage']
+name: Bug report
+description: Something is not working as expected
+labels: ['bug']
 body:
-  - type: markdown
-    attributes:
-      value: |
-        Thanks for taking the time to report a bug! Please fill out the information below to help fix it.
-
   - type: textarea
-    id: description
+    id: bug-description
     attributes:
-      label: Description
-      description: A clear and concise description of the bug
-      placeholder: What happened?
+      label: Describe the bug
+      description: What happened, and what did you expect instead?
+      placeholder: When I do X, Y happens. I expected Z.
     validations:
       required: true
 
   - type: textarea
     id: reproduction
     attributes:
-      label: Steps to Reproduce
+      label: Reproduction
+      description: Minimal code to reproduce the issue
+      render: typescript
+      placeholder: |
+        import wreq from 'wreq-js';
+
+        const res = await wreq('https://example.com');
     validations:
       required: true
 
   - type: textarea
-    id: code
-    attributes:
-      label: Code Example
-      description: Minimal code to reproduce the issue
-      render: typescript
-      placeholder: |
-        import { request } from 'wreq-js';
-
-        const response = await request({
-          url: 'https://example.com',
-          browser: 'chrome_131'
-        });
-    validations:
-      required: false
-
-  - type: textarea
     id: error
     attributes:
-      label: Error Message/Stack Trace
-      description: Full error message and stack trace if applicable
+      label: Error output
+      description: Full error message or stack trace, if any
       render: shell
-      placeholder: Paste error message here...
     validations:
       required: false
 
   - type: input
     id: version
     attributes:
-      label: wreq-js Version
-      description: What version of wreq-js are you using?
-      placeholder: e.g., 0.1.0
+      label: wreq-js version
+      placeholder: 2.1.1
     validations:
       required: true
 
   - type: input
-    id: node-version
+    id: runtime
     attributes:
-      label: Node.js Version
-      description: Output of `node --version`
-      placeholder: e.g., v20.11.0
+      label: Runtime
+      description: Output of `node --version` or `bun --version`
+      placeholder: node v22.0.0
     validations:
       required: true
 
   - type: dropdown
     id: os
     attributes:
-      label: Operating System
-      description: What OS are you using?
+      label: OS
       options:
-        - macOS (Intel)
         - macOS (Apple Silicon)
+        - macOS (Intel)
         - Linux (x64)
+        - Linux (arm64)
         - Windows (x64)
-        - Other
-    validations:
-      required: true
-
-  - type: dropdown
-    id: installation
-    attributes:
-      label: Installation Method
-      description: How did you install wreq-js?
-      options:
-        - npm
-        - yarn
-        - pnpm
-        - Built from source
     validations:
       required: true
 
   - type: textarea
     id: additional
     attributes:
-      label: Additional Context
-      description: Any other context about the problem
-      placeholder: |
-        - Using proxy?
-        - Specific website having issues?
-        - Network environment details?
+      label: Additional context
+      description: Anything else relevant (proxy setup, target website, network environment, etc.)
     validations:
       required: false
