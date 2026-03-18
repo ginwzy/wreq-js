@@ -164,74 +164,112 @@ function detectLibc(): "gnu" | "musl" | undefined {
 const require =
   typeof import.meta !== "undefined" && import.meta.url ? createRequire(import.meta.url) : createRequire(__filename);
 
-function requirePlatformBinary(platformArch: string) {
-  switch (platformArch) {
-    case "darwin-x64":
-      return require("../rust/wreq-js.darwin-x64.node");
-    case "darwin-arm64":
-      return require("../rust/wreq-js.darwin-arm64.node");
-    case "linux-x64-gnu":
-      return require("../rust/wreq-js.linux-x64-gnu.node");
-    case "linux-x64-musl":
-      return require("../rust/wreq-js.linux-x64-musl.node");
-    case "linux-arm64-gnu":
-      return require("../rust/wreq-js.linux-arm64-gnu.node");
-    case "win32-x64-msvc":
-      return require("../rust/wreq-js.win32-x64-msvc.node");
-    default:
-      return undefined;
-  }
-}
-
 function loadNativeBinding() {
   const platform = process.platform;
   const arch = process.arch;
   const libc = detectLibc();
 
-  const platformArchMap: Record<string, Record<string, string | Record<"gnu" | "musl", string>>> = {
-    darwin: { x64: "darwin-x64", arm64: "darwin-arm64" },
-    linux: {
-      x64: { gnu: "linux-x64-gnu", musl: "linux-x64-musl" },
-      arm64: "linux-arm64-gnu",
-    },
-    win32: { x64: "win32-x64-msvc" },
-  };
-
-  const platformArchMapEntry = platformArchMap[platform]?.[arch];
-  const platformArch =
-    typeof platformArchMapEntry === "string"
-      ? platformArchMapEntry
-      : platformArchMapEntry?.[(libc ?? "gnu") as "gnu" | "musl"];
-
-  if (!platformArch) {
-    throw new Error(
-      `Unsupported platform: ${platform}-${arch}${libc ? `-${libc}` : ""}. ` +
-        `Supported platforms: darwin-x64, darwin-arm64, linux-x64-gnu, linux-x64-musl, ` +
-        `linux-arm64-gnu, win32-x64-msvc`,
-    );
-  }
-
-  const binaryName = `wreq-js.${platformArch}.node`;
-
-  try {
-    const platformBinding = requirePlatformBinary(platformArch);
-
-    if (platformBinding) {
-      return platformBinding;
+  if (platform === "darwin" && arch === "x64") {
+    try {
+      return require("../rust/wreq-js.darwin-x64.node");
+    } catch {
+      try {
+        return require("../rust/wreq-js.node");
+      } catch {
+        throw new Error(
+          "Failed to load native module for darwin-x64. " +
+            "Tried: ../rust/wreq-js.darwin-x64.node and ../rust/wreq-js.node. " +
+            "Make sure the package is installed correctly and the native module is built for your platform.",
+        );
+      }
     }
-  } catch {
-    // Fall through to the generic binary name below.
   }
 
-  try {
-    return require("../rust/wreq-js.node");
-  } catch {
-    throw new Error(
-      `Failed to load native module for ${platform}-${arch}. ` +
-        `Tried: ../rust/${binaryName} and ../rust/wreq-js.node. ` +
-        `Make sure the package is installed correctly and the native module is built for your platform.`,
-    );
+  if (platform === "darwin" && arch === "arm64") {
+    try {
+      return require("../rust/wreq-js.darwin-arm64.node");
+    } catch {
+      try {
+        return require("../rust/wreq-js.node");
+      } catch {
+        throw new Error(
+          "Failed to load native module for darwin-arm64. " +
+            "Tried: ../rust/wreq-js.darwin-arm64.node and ../rust/wreq-js.node. " +
+            "Make sure the package is installed correctly and the native module is built for your platform.",
+        );
+      }
+    }
   }
+
+  if (platform === "linux" && arch === "x64") {
+    if (libc === "musl") {
+      try {
+        return require("../rust/wreq-js.linux-x64-musl.node");
+      } catch {
+        try {
+          return require("../rust/wreq-js.node");
+        } catch {
+          throw new Error(
+            "Failed to load native module for linux-x64-musl. " +
+              "Tried: ../rust/wreq-js.linux-x64-musl.node and ../rust/wreq-js.node. " +
+              "Make sure the package is installed correctly and the native module is built for your platform.",
+          );
+        }
+      }
+    }
+
+    try {
+      return require("../rust/wreq-js.linux-x64-gnu.node");
+    } catch {
+      try {
+        return require("../rust/wreq-js.node");
+      } catch {
+        throw new Error(
+          "Failed to load native module for linux-x64-gnu. " +
+            "Tried: ../rust/wreq-js.linux-x64-gnu.node and ../rust/wreq-js.node. " +
+            "Make sure the package is installed correctly and the native module is built for your platform.",
+        );
+      }
+    }
+  }
+
+  if (platform === "linux" && arch === "arm64") {
+    try {
+      return require("../rust/wreq-js.linux-arm64-gnu.node");
+    } catch {
+      try {
+        return require("../rust/wreq-js.node");
+      } catch {
+        throw new Error(
+          "Failed to load native module for linux-arm64-gnu. " +
+            "Tried: ../rust/wreq-js.linux-arm64-gnu.node and ../rust/wreq-js.node. " +
+            "Make sure the package is installed correctly and the native module is built for your platform.",
+        );
+      }
+    }
+  }
+
+  if (platform === "win32" && arch === "x64") {
+    try {
+      return require("../rust/wreq-js.win32-x64-msvc.node");
+    } catch {
+      try {
+        return require("../rust/wreq-js.node");
+      } catch {
+        throw new Error(
+          "Failed to load native module for win32-x64-msvc. " +
+            "Tried: ../rust/wreq-js.win32-x64-msvc.node and ../rust/wreq-js.node. " +
+            "Make sure the package is installed correctly and the native module is built for your platform.",
+        );
+      }
+    }
+  }
+
+  throw new Error(
+    `Unsupported platform: ${platform}-${arch}${libc ? `-${libc}` : ""}. ` +
+      `Supported platforms: darwin-x64, darwin-arm64, linux-x64-gnu, linux-x64-musl, ` +
+      `linux-arm64-gnu, win32-x64-msvc`,
+  );
 }
 
 nativeBinding = loadNativeBinding();
