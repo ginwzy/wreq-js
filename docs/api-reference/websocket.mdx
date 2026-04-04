@@ -46,6 +46,16 @@ declare class WebSocket {
   Values are validated for non-empty unique entries and sent in the `Sec-WebSocket-Protocol` handshake header.
 </ParamField>
 
+<ParamField path="maxFrameSize" type="number">
+  Maximum size in bytes for a single incoming WebSocket frame.
+  Increase this when the peer sends large unfragmented frames.
+</ParamField>
+
+<ParamField path="maxMessageSize" type="number">
+  Maximum size in bytes for a complete incoming WebSocket message.
+  Increase this when the peer sends very large fragmented messages.
+</ParamField>
+
 <ParamField path="binaryType" type="\"nodebuffer\" | \"arraybuffer\" | \"blob\"" default="nodebuffer">
   Binary payload format exposed at `event.data`.
 </ParamField>
@@ -157,4 +167,17 @@ ws.onmessage = (event) => {
     console.log('received array buffer', event.data.byteLength);
   }
 };
+```
+
+### Large incoming messages
+
+Some providers send very large WebSocket payloads in a single frame. If you see an error such as
+`Space limit exceeded: Message too long`, raise the frame or message limits explicitly.
+
+```typescript
+const ws = await websocket('wss://example.com/socket', {
+  browser: 'chrome_142',
+  maxFrameSize: 32 * 1024 * 1024,
+  maxMessageSize: 32 * 1024 * 1024,
+});
 ```

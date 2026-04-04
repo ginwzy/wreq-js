@@ -59,6 +59,8 @@ interface NativeWebSocketOptions {
   headers: HeaderTuple[];
   protocols?: string[];
   proxy?: string;
+  maxFrameSize?: number;
+  maxMessageSize?: number;
   onMessage: (data: string | Buffer) => void;
   onClose?: (event: NativeWebSocketCloseEvent) => void;
   onError?: (error: string) => void;
@@ -70,6 +72,8 @@ interface NativeWebSocketSessionOptions {
   transportId: string;
   headers: HeaderTuple[];
   protocols?: string[];
+  maxFrameSize?: number;
+  maxMessageSize?: number;
   onMessage: (data: string | Buffer) => void;
   onClose?: (event: NativeWebSocketCloseEvent) => void;
   onError?: (error: string) => void;
@@ -1190,6 +1194,10 @@ export class Session implements SessionHandle {
           transportId,
           headers: headersToTuples(normalized.options.headers ?? {}),
           ...(protocols && protocols.length > 0 && { protocols }),
+          ...(normalized.options.maxFrameSize !== undefined && { maxFrameSize: normalized.options.maxFrameSize }),
+          ...(normalized.options.maxMessageSize !== undefined && {
+            maxMessageSize: normalized.options.maxMessageSize,
+          }),
           onMessage: callbacks.onMessage,
           onClose: callbacks.onClose,
           onError: callbacks.onError,
@@ -2814,6 +2822,16 @@ function validateWebSocketProtocols(protocols?: string | string[]): void {
   }
 }
 
+function normalizeWebSocketSizeOption(value: number | undefined, label: string): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new RequestError(`${label} must be a positive safe integer`);
+  }
+  return value;
+}
+
 function normalizeStandaloneWebSocketOptions(options?: Partial<WebSocketOptions>): WebSocketOptions {
   const normalized: WebSocketOptions = {};
   if (!options) {
@@ -2837,6 +2855,18 @@ function normalizeStandaloneWebSocketOptions(options?: Partial<WebSocketOptions>
   }
   if (options.protocols !== undefined) {
     normalized.protocols = options.protocols;
+  }
+  if (options.maxFrameSize !== undefined) {
+    const maxFrameSize = normalizeWebSocketSizeOption(options.maxFrameSize, "maxFrameSize");
+    if (maxFrameSize !== undefined) {
+      normalized.maxFrameSize = maxFrameSize;
+    }
+  }
+  if (options.maxMessageSize !== undefined) {
+    const maxMessageSize = normalizeWebSocketSizeOption(options.maxMessageSize, "maxMessageSize");
+    if (maxMessageSize !== undefined) {
+      normalized.maxMessageSize = maxMessageSize;
+    }
   }
   if (options.binaryType !== undefined) {
     if (options.binaryType !== "nodebuffer" && options.binaryType !== "arraybuffer" && options.binaryType !== "blob") {
@@ -2877,6 +2907,18 @@ function normalizeSessionWebSocketOptions(options?: Partial<SessionWebSocketOpti
   }
   if (options.protocols !== undefined) {
     normalized.protocols = options.protocols;
+  }
+  if (options.maxFrameSize !== undefined) {
+    const maxFrameSize = normalizeWebSocketSizeOption(options.maxFrameSize, "maxFrameSize");
+    if (maxFrameSize !== undefined) {
+      normalized.maxFrameSize = maxFrameSize;
+    }
+  }
+  if (options.maxMessageSize !== undefined) {
+    const maxMessageSize = normalizeWebSocketSizeOption(options.maxMessageSize, "maxMessageSize");
+    if (maxMessageSize !== undefined) {
+      normalized.maxMessageSize = maxMessageSize;
+    }
   }
   if (options.binaryType !== undefined) {
     if (options.binaryType !== "nodebuffer" && options.binaryType !== "arraybuffer" && options.binaryType !== "blob") {
@@ -3121,6 +3163,8 @@ export class WebSocket {
           headers: headersToTuples(normalizedOptions.headers ?? {}),
           ...(protocols && protocols.length > 0 && { protocols }),
           ...(normalizedOptions.proxy !== undefined && { proxy: normalizedOptions.proxy }),
+          ...(normalizedOptions.maxFrameSize !== undefined && { maxFrameSize: normalizedOptions.maxFrameSize }),
+          ...(normalizedOptions.maxMessageSize !== undefined && { maxMessageSize: normalizedOptions.maxMessageSize }),
           onMessage: callbacks.onMessage,
           onClose: callbacks.onClose,
           onError: callbacks.onError,
@@ -3656,6 +3700,8 @@ export async function websocket(
         headers: headersToTuples(normalized.options.headers ?? {}),
         ...(protocols && protocols.length > 0 && { protocols }),
         ...(normalized.options.proxy !== undefined && { proxy: normalized.options.proxy }),
+        ...(normalized.options.maxFrameSize !== undefined && { maxFrameSize: normalized.options.maxFrameSize }),
+        ...(normalized.options.maxMessageSize !== undefined && { maxMessageSize: normalized.options.maxMessageSize }),
         onMessage: callbacks.onMessage,
         onClose: callbacks.onClose,
         onError: callbacks.onError,

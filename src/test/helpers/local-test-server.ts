@@ -475,8 +475,16 @@ export async function startLocalTestServer(): Promise<LocalTestServer> {
 
       const echoCookie = url.searchParams.get("echoCookie") === "1";
       const welcomeText = echoCookie ? `cookie:${req.headers.cookie ?? ""}` : undefined;
+      const largeFrameBytesRaw = url.searchParams.get("largeFrameBytes");
+      const largeFrameBinary = url.searchParams.get("largeFrameBinary") === "1";
+      const largeFrameBytes =
+        largeFrameBytesRaw !== null &&
+        Number.isSafeInteger(Number(largeFrameBytesRaw)) &&
+        Number(largeFrameBytesRaw) > 0
+          ? Number(largeFrameBytesRaw)
+          : undefined;
 
-      setupEchoWebSocket(socket, serverClose, welcomeText);
+      setupEchoWebSocket(socket, serverClose, welcomeText, largeFrameBytes, largeFrameBinary);
     } catch (error) {
       console.error("Local test server WebSocket upgrade error:", error);
       socket.destroy();
@@ -484,7 +492,13 @@ export async function startLocalTestServer(): Promise<LocalTestServer> {
   }
 }
 
-function setupEchoWebSocket(socket: Socket, serverClose?: { code: number; reason: string }, welcomeText?: string) {
+function setupEchoWebSocket(
+  socket: Socket,
+  serverClose?: { code: number; reason: string },
+  welcomeText?: string,
+  largeFrameBytes?: number,
+  largeFrameBinary = false,
+) {
   let buffer = Buffer.alloc(0);
   let closed = false;
 
@@ -514,6 +528,11 @@ function setupEchoWebSocket(socket: Socket, serverClose?: { code: number; reason
 
   if (welcomeText !== undefined) {
     sendFrame(0x1, Buffer.from(welcomeText, "utf8"));
+  }
+
+  if (largeFrameBytes !== undefined) {
+    const payload = Buffer.alloc(largeFrameBytes, largeFrameBinary ? 0xab : 0x78);
+    sendFrame(largeFrameBinary ? 0x2 : 0x1, payload);
   }
 
   function parseFrames() {

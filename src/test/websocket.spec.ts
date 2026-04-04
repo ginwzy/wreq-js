@@ -5,6 +5,7 @@ import {
   createSession,
   RequestError,
   type WebSocketCloseEvent,
+  type WebSocketErrorEvent,
   type WebSocketMessageEvent,
   Headers as WreqHeaders,
   WebSocket as WreqWebSocket,
@@ -92,6 +93,22 @@ function waitForMessage(ws: WreqWebSocket, timeoutMs = 2_000): Promise<WebSocket
     };
 
     ws.addEventListener("message", onMessage);
+  });
+}
+
+function waitForError(ws: WreqWebSocket, timeoutMs = 2_000): Promise<WebSocketErrorEvent> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      ws.removeEventListener("error", onError);
+      reject(new Error("Timed out waiting for error event"));
+    }, timeoutMs);
+
+    const onError = (event: WebSocketErrorEvent) => {
+      clearTimeout(timer);
+      resolve(event);
+    };
+
+    ws.addEventListener("error", onError);
   });
 }
 
@@ -346,6 +363,41 @@ describe("WebSocket", () => {
 
     ws.close();
     await waitForClose(ws);
+  });
+
+  test("raises maxFrameSize to allow oversized incoming frames", async () => {
+    const url = new URL(WS_TEST_URL);
+    url.searchParams.set("largeFrameBytes", String(18 * 1024 * 1024));
+
+    const limited = await websocket(url, { browser: "chrome_142" });
+    const errorEvent = await waitForError(limited, 5_000);
+    assert.match(errorEvent.message ?? "", /Space limit exceeded: Message too long: 18874368 > 16777216/);
+    await waitForClose(limited, 5_000);
+
+    const ws = await websocket(url, {
+      browser: "chrome_142",
+      maxFrameSize: 20 * 1024 * 1024,
+      maxMessageSize: 20 * 1024 * 1024,
+    });
+
+    const event = await waitForMessage(ws, 5_000);
+    assert.strictEqual(typeof event.data, "string");
+    assert.strictEqual((event.data as string).length, 18 * 1024 * 1024);
+
+    ws.close();
+    await waitForClose(ws);
+  });
+
+  test("rejects invalid websocket size options", async () => {
+    assert.throws(() => {
+      new WreqWebSocket(WS_TEST_URL, { browser: "chrome_142", maxFrameSize: 0 });
+    }, /maxFrameSize must be a positive safe integer/);
+
+    await assert.rejects(
+      websocket(WS_TEST_URL, { browser: "chrome_142", maxMessageSize: Number.NaN }),
+      (error: unknown) =>
+        error instanceof RequestError && /maxMessageSize must be a positive safe integer/.test(error.message),
+    );
   });
 
   test("addEventListener and removeEventListener work for message events", async () => {

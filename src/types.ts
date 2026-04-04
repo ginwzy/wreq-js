@@ -728,6 +728,18 @@ export interface WebSocketOptions {
   protocols?: string | string[];
 
   /**
+   * Maximum size in bytes for a single incoming WebSocket frame.
+   * Increase this when the peer sends large unfragmented frames.
+   */
+  maxFrameSize?: number;
+
+  /**
+   * Maximum size in bytes for a complete incoming WebSocket message.
+   * Increase this when the peer sends very large fragmented messages.
+   */
+  maxMessageSize?: number;
+
+  /**
    * Controls the binary payload type exposed via `MessageEvent.data`.
    * - "nodebuffer": delivers Node.js Buffer instances (default)
    * - "arraybuffer": delivers ArrayBuffer instances

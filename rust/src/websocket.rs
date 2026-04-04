@@ -29,6 +29,8 @@ pub struct WebSocketOptions {
     pub headers: Vec<(String, String)>,
     pub protocols: Vec<String>,
     pub proxy: Option<Arc<str>>,
+    pub max_frame_size: Option<usize>,
+    pub max_message_size: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -149,6 +151,8 @@ pub async fn connect_websocket(
         &options.headers,
         &options.protocols,
         &emulation_orig_headers,
+        options.max_frame_size,
+        options.max_message_size,
     )
     .await
 }
@@ -160,6 +164,8 @@ pub async fn connect_websocket_with_session(
     url: &str,
     headers: &[(String, String)],
     protocols: &[String],
+    max_frame_size: Option<usize>,
+    max_message_size: Option<usize>,
 ) -> Result<(
     WsConnection,
     futures_util::stream::SplitStream<WebSocket>,
@@ -219,6 +225,8 @@ pub async fn connect_websocket_with_session(
         &all_headers,
         protocols,
         &resolved.emulation_orig_headers,
+        max_frame_size,
+        max_message_size,
     )
     .await
 }
@@ -274,6 +282,8 @@ async fn connect_websocket_with_client(
     headers: &[(String, String)],
     protocols: &[String],
     emulation_orig_headers: &OrigHeaderMap,
+    max_frame_size: Option<usize>,
+    max_message_size: Option<usize>,
 ) -> Result<(
     WsConnection,
     futures_util::stream::SplitStream<WebSocket>,
@@ -289,6 +299,14 @@ async fn connect_websocket_with_client(
 
     if !protocols.is_empty() {
         request = request.protocols(protocols.iter().cloned());
+    }
+
+    if let Some(value) = max_frame_size {
+        request = request.max_frame_size(value);
+    }
+
+    if let Some(value) = max_message_size {
+        request = request.max_message_size(value);
     }
 
     // Set original header casing for HTTP/1.1 (Cloudflare rejects lowercase).

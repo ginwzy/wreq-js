@@ -937,6 +937,27 @@ fn extract_ws_protocols(
     cx.throw_type_error("protocols must be a string or string array")
 }
 
+fn extract_optional_ws_size(
+    cx: &mut FunctionContext,
+    options_obj: &Handle<JsObject>,
+    key: &str,
+) -> NeonResult<Option<usize>> {
+    let Some(value) = options_obj.get_opt::<JsValue, _, _>(cx, key)? else {
+        return Ok(None);
+    };
+
+    if value.is_a::<JsUndefined, _>(cx) || value.is_a::<JsNull, _>(cx) {
+        return Ok(None);
+    }
+
+    let number = value.downcast_or_throw::<JsNumber, _>(cx)?.value(cx);
+    if !number.is_finite() || number <= 0.0 || number.fract() != 0.0 {
+        return cx.throw_range_error(format!("{key} must be a positive integer"));
+    }
+
+    Ok(Some(number as usize))
+}
+
 // WebSocket connection function (standalone, no session)
 fn websocket_connect(mut cx: FunctionContext) -> JsResult<JsPromise> {
     let options_obj = cx.argument::<JsObject>(0)?;
@@ -961,6 +982,8 @@ fn websocket_connect(mut cx: FunctionContext) -> JsResult<JsPromise> {
 
     let headers = extract_ws_headers(&mut cx, &options_obj)?;
     let protocols = extract_ws_protocols(&mut cx, &options_obj)?;
+    let max_frame_size = extract_optional_ws_size(&mut cx, &options_obj, "maxFrameSize")?;
+    let max_message_size = extract_optional_ws_size(&mut cx, &options_obj, "maxMessageSize")?;
 
     let proxy = options_obj
         .get_opt(&mut cx, "proxy")?
@@ -977,6 +1000,8 @@ fn websocket_connect(mut cx: FunctionContext) -> JsResult<JsPromise> {
         headers,
         protocols,
         proxy,
+        max_frame_size,
+        max_message_size,
     };
 
     let (deferred, promise) = cx.promise();
@@ -1038,6 +1063,8 @@ fn websocket_connect_session(mut cx: FunctionContext) -> JsResult<JsPromise> {
 
     let headers = extract_ws_headers(&mut cx, &options_obj)?;
     let protocols = extract_ws_protocols(&mut cx, &options_obj)?;
+    let max_frame_size = extract_optional_ws_size(&mut cx, &options_obj, "maxFrameSize")?;
+    let max_message_size = extract_optional_ws_size(&mut cx, &options_obj, "maxMessageSize")?;
     let (on_message, on_close, on_error) = extract_ws_callbacks(&mut cx, &options_obj)?;
 
     let (deferred, promise) = cx.promise();
@@ -1052,6 +1079,8 @@ fn websocket_connect_session(mut cx: FunctionContext) -> JsResult<JsPromise> {
                 &url,
                 &headers,
                 &protocols,
+                max_frame_size,
+                max_message_size,
             )
             .await?;
             let id = setup_ws_callbacks(

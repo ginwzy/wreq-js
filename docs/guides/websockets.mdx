@@ -151,6 +151,23 @@ If you pass a custom close code, use `1000` or a code in the `3000` to `4999` ra
 
 If you pass a reason, keep it to `123` UTF-8 bytes or fewer.
 
+## 7. Large frames and message limits
+
+Incoming WebSocket data is bounded by default to avoid unbounded memory use.
+If a provider sends a very large payload in one frame, you may see an error like
+`Space limit exceeded: Message too long`.
+
+Raise `maxFrameSize` when the peer sends large unfragmented frames. Raise `maxMessageSize`
+when the peer sends very large fragmented messages.
+
+```typescript
+const ws = await websocket('wss://example.com/socket', {
+  browser: 'chrome_142',
+  maxFrameSize: 32 * 1024 * 1024,
+  maxMessageSize: 32 * 1024 * 1024,
+});
+```
+
 ## Related
 
 1. API reference: [`websocket()`](/api-reference/websocket)
