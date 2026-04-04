@@ -294,7 +294,7 @@ jobs:
         run: npm ci --ignore-scripts
 
       - name: Check TypeScript types
-        run: npx tsc --noEmit
+        run: npm run typecheck
 
       - name: Check code formatting
         run: npm run ci:biome
