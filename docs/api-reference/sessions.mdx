@@ -45,6 +45,10 @@ function createSession(options?: CreateSessionOptions): Promise<Session>
   Accept invalid certificates for all session requests. **Use only in development.**
 </ParamField>
 
+<ParamField path="captureDiagnostics" type="boolean" default="false">
+  Enable extra connection and TLS diagnostics for requests made through this session by default.
+</ParamField>
+
 ### Session object
 
 The returned `Session` object has:
@@ -61,6 +65,8 @@ const response = await session.fetch('https://example.com/api', {
 ```
 
 Per-request options override session defaults.
+
+`session.fetch()` also accepts request-scoped `onRequestEvent` and `captureDiagnostics` options from [`fetch()`](/api-reference/fetch). When diagnostics are enabled, inspect `response.diagnostics` on the returned response.
 
 #### session.websocket(url, options?)
 
