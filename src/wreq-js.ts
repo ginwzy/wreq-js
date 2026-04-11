@@ -26,6 +26,8 @@ import type {
   LegacySessionWebSocketOptions,
   LegacyWebSocketOptions,
   NativeResponse,
+  RequestDiagnostics,
+  RequestEvent,
   NativeWebSocketConnection,
   RequestOptions,
   SessionHandle,
@@ -96,6 +98,7 @@ interface NativeTransportOptions {
   poolMaxSize?: number;
   connectTimeout?: number;
   readTimeout?: number;
+  captureDiagnostics?: boolean;
 }
 
 interface NativeRequestOptions {
@@ -116,6 +119,8 @@ interface NativeRequestOptions {
   trustStore?: TrustStoreMode;
   transportId?: string;
   compress?: boolean;
+  captureDiagnostics?: boolean;
+  onRequestEvent?: (event: RequestEvent) => void;
 }
 
 let nativeBinding: {
@@ -320,6 +325,7 @@ type SessionDefaults = {
   insecure?: boolean;
   trustStore?: TrustStoreMode;
   defaultHeaders?: HeaderTuple[];
+  captureDiagnostics?: boolean;
   transportId?: string;
   ownsTransport?: boolean;
 };
@@ -337,6 +343,7 @@ type TransportResolution = {
   proxy?: string;
   insecure?: boolean;
   trustStore?: TrustStoreMode;
+  captureDiagnostics?: boolean;
 };
 
 type SerializedCustomEmulation = {
@@ -420,6 +427,10 @@ function normalizeSessionOptions(options?: CreateSessionOptions): { sessionId: s
 
   if (options?.defaultHeaders !== undefined) {
     defaults.defaultHeaders = headersToTuples(options.defaultHeaders);
+  }
+
+  if (options?.captureDiagnostics !== undefined) {
+    defaults.captureDiagnostics = options.captureDiagnostics;
   }
 
   return { sessionId, defaults };
@@ -685,6 +696,7 @@ function cloneNativeResponse(payload: NativeResponse): NativeResponse {
     contentLength: payload.contentLength,
     cookies: payload.cookies.map(([name, value]): HeaderTuple => [name, value]),
     url: payload.url,
+    diagnostics: payload.diagnostics ? { ...payload.diagnostics } : null,
   };
 }
 
@@ -783,6 +795,7 @@ export class Response {
   readonly ok: boolean;
   readonly contentLength: number | null;
   readonly url: string;
+  readonly diagnostics: RequestDiagnostics | null;
   readonly type: ResponseType = "basic";
   bodyUsed = false;
 
@@ -808,6 +821,7 @@ export class Response {
     this.headersInit = this.payload.headers;
     this.headersInstance = null;
     this.url = this.payload.url;
+    this.diagnostics = this.payload.diagnostics ?? null;
     this.cookiesInit = this.payload.cookies;
     this.cookiesRecord = null;
     this.contentLength = this.payload.contentLength ?? null;
@@ -1330,7 +1344,12 @@ function resolveTransportContext(config: WreqRequestInit, sessionDefaults?: Sess
       );
     }
 
-    return { transportId: config.transport.id };
+    return {
+      transportId: config.transport.id,
+      ...(config.captureDiagnostics !== undefined && {
+        captureDiagnostics: config.captureDiagnostics,
+      }),
+    };
   }
 
   if (sessionDefaults?.transportId) {
@@ -1375,7 +1394,12 @@ function resolveTransportContext(config: WreqRequestInit, sessionDefaults?: Sess
       }
     }
 
-    return { transportId: sessionDefaults.transportId };
+    const captureDiagnostics =
+      config.captureDiagnostics ?? sessionDefaults.captureDiagnostics;
+    return {
+      transportId: sessionDefaults.transportId,
+      ...(captureDiagnostics !== undefined && { captureDiagnostics }),
+    };
   }
 
   const resolved: TransportResolution = {
@@ -1388,6 +1412,9 @@ function resolveTransportContext(config: WreqRequestInit, sessionDefaults?: Sess
     resolved.insecure = config.insecure;
   }
   resolved.trustStore = config.trustStore ?? DEFAULT_TRUST_STORE;
+  if (config.captureDiagnostics !== undefined) {
+    resolved.captureDiagnostics = config.captureDiagnostics;
+  }
   return resolved;
 }
 
@@ -2519,6 +2546,13 @@ export async function fetch(input: string | URL | Request, init?: WreqRequestIni
     requestOptions.body = body;
   }
 
+  if (transport.captureDiagnostics !== undefined) {
+    requestOptions.captureDiagnostics = transport.captureDiagnostics;
+  }
+  if (config.onRequestEvent !== undefined) {
+    requestOptions.onRequestEvent = config.onRequestEvent;
+  }
+
   if (transport.transportId) {
     requestOptions.transportId = transport.transportId;
   } else {
@@ -2584,6 +2618,9 @@ export async function createTransport(options?: CreateTransportOptions): Promise
       ...(options?.poolMaxSize !== undefined && { poolMaxSize: options.poolMaxSize }),
       ...(options?.connectTimeout !== undefined && { connectTimeout: options.connectTimeout }),
       ...(options?.readTimeout !== undefined && { readTimeout: options.readTimeout }),
+      ...(options?.captureDiagnostics !== undefined && {
+        captureDiagnostics: options.captureDiagnostics,
+      }),
     };
     applyNativeEmulationMode(transportOptions, mode);
 
@@ -2606,6 +2643,9 @@ export async function createSession(options?: CreateSessionOptions): Promise<Ses
       ...(defaults.proxy !== undefined && { proxy: defaults.proxy }),
       ...(defaults.insecure !== undefined && { insecure: defaults.insecure }),
       trustStore: defaults.trustStore ?? DEFAULT_TRUST_STORE,
+      ...(defaults.captureDiagnostics !== undefined && {
+        captureDiagnostics: defaults.captureDiagnostics,
+      }),
     };
     applyNativeEmulationMode(transportOptions, defaults.transportMode);
     transportId = nativeBinding.createTransport(transportOptions);
@@ -2725,6 +2765,14 @@ export async function request(options: RequestOptions): Promise<Response> {
     init.cookieMode = legacy.cookieMode;
   } else if (legacy.ephemeral === true) {
     init.cookieMode = "ephemeral";
+  }
+
+  if (legacy.onRequestEvent !== undefined) {
+    init.onRequestEvent = legacy.onRequestEvent;
+  }
+
+  if (legacy.captureDiagnostics !== undefined) {
+    init.captureDiagnostics = legacy.captureDiagnostics;
   }
 
   return fetch(url, init);
@@ -3776,6 +3824,9 @@ export type {
   Http2PseudoHeaderId,
   Http2SettingId,
   Http2StreamDependency,
+  RequestDiagnostics,
+  RequestEvent,
+  RequestEventType,
   RequestInit,
   RequestOptions,
   SessionHandle,
