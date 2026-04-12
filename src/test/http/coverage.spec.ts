@@ -351,6 +351,7 @@ describe("Session validation", () => {
       proxy: "http://proxy.example.com:8080",
       timeout: 2500,
       insecure: true,
+      trustStore: "defaultPaths",
     });
 
     try {
@@ -358,6 +359,7 @@ describe("Session validation", () => {
       assert.strictEqual(defaults.proxy, "http://proxy.example.com:8080");
       assert.strictEqual(defaults.timeout, 2500);
       assert.strictEqual(defaults.insecure, true);
+      assert.strictEqual(defaults.trustStore, "defaultPaths");
       assert.strictEqual(session.closed, false);
     } finally {
       await session.close();

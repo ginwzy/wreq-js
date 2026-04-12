@@ -9,7 +9,7 @@ use client::{
     create_managed_session, create_managed_transport, drop_body_stream, drop_managed_session,
     drop_managed_transport, generate_session_id, get_session_cookies, make_request,
     read_body_all as native_read_body_all, read_body_chunk as native_read_body_chunk,
-    set_session_cookie,
+    set_session_cookie, TrustStoreMode,
 };
 use dashmap::DashMap;
 use futures_util::StreamExt;
@@ -69,6 +69,14 @@ fn parse_emulation_os(os: &str) -> EmulationOS {
     });
 
     OS_CACHE.get(os).cloned().unwrap_or(EmulationOS::MacOS)
+}
+
+fn parse_trust_store_mode(value: &str) -> TrustStoreMode {
+    match value {
+        "mozilla" => TrustStoreMode::Mozilla,
+        "defaultPaths" => TrustStoreMode::DefaultPaths,
+        _ => TrustStoreMode::Combined,
+    }
 }
 
 fn coerce_header_value(cx: &mut FunctionContext, value: Handle<JsValue>) -> NeonResult<String> {
@@ -262,6 +270,12 @@ fn js_object_to_request_options(
         .map(|v| v.value(cx))
         .unwrap_or(false);
 
+    let trust_store = obj
+        .get_opt(cx, "trustStore")?
+        .and_then(|v: Handle<JsValue>| v.downcast::<JsString, _>(cx).ok())
+        .map(|v| parse_trust_store_mode(&v.value(cx)))
+        .unwrap_or_default();
+
     let compress = obj
         .get_opt(cx, "compress")?
         .and_then(|v: Handle<JsValue>| v.downcast::<JsBoolean, _>(cx).ok())
@@ -314,6 +328,7 @@ fn js_object_to_request_options(
         ephemeral,
         disable_default_headers,
         insecure,
+        trust_store,
         transport_id,
         pool_idle_timeout,
         pool_max_idle_per_host,
@@ -522,6 +537,7 @@ fn create_transport(mut cx: FunctionContext) -> JsResult<JsString> {
         emulation_json_opt,
         proxy_opt,
         insecure_opt,
+        trust_store_opt,
         pool_idle_timeout_opt,
         pool_max_idle_per_host_opt,
         pool_max_size_opt,
@@ -529,7 +545,9 @@ fn create_transport(mut cx: FunctionContext) -> JsResult<JsString> {
         read_timeout_opt,
     ) = if let Some(value) = options_value {
         if value.is_a::<JsUndefined, _>(&mut cx) || value.is_a::<JsNull, _>(&mut cx) {
-            (None, None, None, None, None, None, None, None, None, None)
+            (
+                None, None, None, None, None, None, None, None, None, None, None,
+            )
         } else {
             let obj = value.downcast_or_throw::<JsObject, _>(&mut cx)?;
             let browser = obj
@@ -551,6 +569,10 @@ fn create_transport(mut cx: FunctionContext) -> JsResult<JsString> {
             let insecure = obj
                 .get_opt(&mut cx, "insecure")?
                 .and_then(|v: Handle<JsValue>| v.downcast::<JsBoolean, _>(&mut cx).ok())
+                .map(|v| v.value(&mut cx));
+            let trust_store = obj
+                .get_opt(&mut cx, "trustStore")?
+                .and_then(|v: Handle<JsValue>| v.downcast::<JsString, _>(&mut cx).ok())
                 .map(|v| v.value(&mut cx));
             let pool_idle_timeout = obj
                 .get_opt(&mut cx, "poolIdleTimeout")?
@@ -579,6 +601,7 @@ fn create_transport(mut cx: FunctionContext) -> JsResult<JsString> {
                 emulation_json,
                 proxy,
                 insecure,
+                trust_store,
                 pool_idle_timeout,
                 pool_max_idle_per_host,
                 pool_max_size,
@@ -587,12 +610,18 @@ fn create_transport(mut cx: FunctionContext) -> JsResult<JsString> {
             )
         }
     } else {
-        (None, None, None, None, None, None, None, None, None, None)
+        (
+            None, None, None, None, None, None, None, None, None, None, None,
+        )
     };
 
     let browser = browser_opt.as_deref().map(parse_emulation);
     let browser_os = os_opt.as_deref().map(parse_emulation_os);
     let insecure = insecure_opt.unwrap_or(false);
+    let trust_store = trust_store_opt
+        .as_deref()
+        .map(parse_trust_store_mode)
+        .unwrap_or_default();
 
     match create_managed_transport(
         browser,
@@ -600,6 +629,7 @@ fn create_transport(mut cx: FunctionContext) -> JsResult<JsString> {
         emulation_json_opt,
         proxy_opt,
         insecure,
+        trust_store,
         pool_idle_timeout_opt,
         pool_max_idle_per_host_opt,
         pool_max_size_opt,

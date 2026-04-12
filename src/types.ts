@@ -58,6 +58,7 @@ export type AlpsProtocol = "HTTP1" | "HTTP2" | "HTTP3";
 export type TlsVersion = "1.0" | "1.1" | "1.2" | "1.3" | "TLS1.0" | "TLS1.1" | "TLS1.2" | "TLS1.3";
 
 export type Http2PseudoHeaderId = "Method" | "Scheme" | "Authority" | "Path" | "Protocol";
+export type TrustStoreMode = "combined" | "mozilla" | "defaultPaths";
 
 export type Http2SettingId =
   | "HeaderTableSize"
@@ -364,6 +365,20 @@ export interface RequestInit {
   insecure?: boolean;
 
   /**
+   * Controls which certificate roots are used for TLS verification.
+   *
+   * - `"combined"` merges OpenSSL/BoringSSL default verify paths with bundled Mozilla roots.
+   * - `"mozilla"` uses only the bundled Mozilla roots.
+   * - `"defaultPaths"` uses only OpenSSL/BoringSSL default verify paths such as
+   *   `SSL_CERT_FILE` / `SSL_CERT_DIR` when configured.
+   *
+   * Note: `"defaultPaths"` is not a native OS trust-store verifier.
+   * Ignored when `transport` is provided.
+   * @default "combined"
+   */
+  trustStore?: TrustStoreMode;
+
+  /**
    * Whether to automatically decompress response bodies. When set to `false`,
    * the raw compressed response body is returned as-is and the `Content-Encoding`
    * header is preserved. Useful for proxy scenarios where the downstream client
@@ -425,6 +440,12 @@ export interface CreateSessionOptions {
    * @default false
    */
   insecure?: boolean;
+
+  /**
+   * Controls which certificate roots are used for TLS verification for this session.
+   * @default "combined"
+   */
+  trustStore?: TrustStoreMode;
 }
 
 /**
@@ -455,6 +476,12 @@ export interface CreateTransportOptions {
    * Disable HTTPS certificate verification for this transport.
    */
   insecure?: boolean;
+
+  /**
+   * Controls which certificate roots are used for TLS verification for this transport.
+   * @default "combined"
+   */
+  trustStore?: TrustStoreMode;
 
   /**
    * Idle timeout for pooled connections (ms).
@@ -621,6 +648,12 @@ export interface RequestOptions {
    * @default false
    */
   insecure?: boolean;
+
+  /**
+   * Controls which certificate roots are used for TLS verification.
+   * @default "combined"
+   */
+  trustStore?: TrustStoreMode;
 }
 
 /**

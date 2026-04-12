@@ -122,7 +122,7 @@ describe("Transport API", () => {
     );
   });
 
-  test("rejects transport with browser/os/emulation/proxy/insecure overrides", async () => {
+  test("rejects transport with browser/os/emulation/proxy/insecure/trustStore overrides", async () => {
     const transport = await createTransport({ browser: "chrome_142" });
 
     try {
@@ -137,35 +137,35 @@ describe("Transport API", () => {
         wreqFetch(httpUrl("/get"), { transport, browser: "chrome_142" }),
         (error: unknown) =>
           error instanceof RequestError &&
-          /cannot be combined with browser\/os\/emulation\/proxy\/insecure/.test(error.message),
+          /cannot be combined with browser\/os\/emulation\/proxy\/insecure\/trustStore/.test(error.message),
       );
 
       await assert.rejects(
         wreqFetch(httpUrl("/get"), { transport, os: "linux" }),
         (error: unknown) =>
           error instanceof RequestError &&
-          /cannot be combined with browser\/os\/emulation\/proxy\/insecure/.test(error.message),
+          /cannot be combined with browser\/os\/emulation\/proxy\/insecure\/trustStore/.test(error.message),
       );
 
       await assert.rejects(
         wreqFetch(httpUrl("/get"), { transport, emulation: { headers: { "X-Test": "alpha" } } }),
         (error: unknown) =>
           error instanceof RequestError &&
-          /cannot be combined with browser\/os\/emulation\/proxy\/insecure/.test(error.message),
+          /cannot be combined with browser\/os\/emulation\/proxy\/insecure\/trustStore/.test(error.message),
       );
 
       await assert.rejects(
         wreqFetch(httpUrl("/get"), { transport, proxy: "http://proxy.example.com:8080" }),
         (error: unknown) =>
           error instanceof RequestError &&
-          /cannot be combined with browser\/os\/emulation\/proxy\/insecure/.test(error.message),
+          /cannot be combined with browser\/os\/emulation\/proxy\/insecure\/trustStore/.test(error.message),
       );
 
       await assert.rejects(
         wreqFetch(httpUrl("/get"), { transport, insecure: true }),
         (error: unknown) =>
           error instanceof RequestError &&
-          /cannot be combined with browser\/os\/emulation\/proxy\/insecure/.test(error.message),
+          /cannot be combined with browser\/os\/emulation\/proxy\/insecure\/trustStore/.test(error.message),
       );
     } finally {
       await transport.close();

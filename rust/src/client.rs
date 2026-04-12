@@ -14,10 +14,14 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 use wreq::cookie::Jar;
 use wreq::header::OrigHeaderMap;
+use wreq::tls::CertStore;
 use wreq::{Client as HttpClient, Method, Proxy, redirect};
 
 use crate::custom_emulation::resolve_emulation;
 use wreq_util::{Emulation as BrowserEmulation, EmulationOS as BrowserEmulationOS};
+
+#[cfg(test)]
+use std::sync::Mutex as StdMutex;
 
 pub static HTTP_RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
     tokio::runtime::Builder::new_multi_thread()
@@ -36,6 +40,14 @@ static TRANSPORT_MANAGER: LazyLock<TransportManager> = LazyLock::new(TransportMa
 // Most API responses fit within 2 MiB; inlining them skips DashMap, Mutex, and an
 // additional FFI round-trip that the streaming path would otherwise require.
 const INLINE_BODY_MAX: u64 = 2 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum TrustStoreMode {
+    #[default]
+    Combined,
+    Mozilla,
+    DefaultPaths,
+}
 
 #[derive(Debug, Clone, Copy, Default)]
 pub enum RedirectMode {
@@ -73,6 +85,7 @@ pub struct RequestOptions {
     pub ephemeral: bool,
     pub disable_default_headers: bool,
     pub insecure: bool,
+    pub trust_store: TrustStoreMode,
     pub transport_id: Option<String>,
     pub pool_idle_timeout: Option<u64>,
     pub pool_max_idle_per_host: Option<usize>,
@@ -100,6 +113,7 @@ struct SessionConfig {
     emulation_json: Option<Arc<str>>,
     proxy: Option<Arc<str>>,
     insecure: bool,
+    trust_store: TrustStoreMode,
     connect_timeout: Option<Duration>,
     read_timeout: Option<Duration>,
 }
@@ -113,6 +127,7 @@ impl SessionConfig {
             emulation_json: options.emulation_json.clone(),
             proxy: options.proxy.clone(),
             insecure: options.insecure,
+            trust_store: options.trust_store,
             connect_timeout: options.connect_timeout.map(Duration::from_millis),
             read_timeout: options.read_timeout.map(Duration::from_millis),
         }
@@ -126,6 +141,7 @@ struct TransportConfig {
     emulation_json: Option<Arc<str>>,
     proxy: Option<Arc<str>>,
     insecure: bool,
+    trust_store: TrustStoreMode,
     pool_idle_timeout: Option<Duration>,
     pool_max_idle_per_host: Option<usize>,
     pool_max_size: Option<u32>,
@@ -142,6 +158,7 @@ impl TransportConfig {
             emulation_json: options.emulation_json.clone(),
             proxy: options.proxy.clone(),
             insecure: options.insecure,
+            trust_store: options.trust_store,
             pool_idle_timeout: options.pool_idle_timeout.map(Duration::from_millis),
             pool_max_idle_per_host: options.pool_max_idle_per_host,
             pool_max_size: options.pool_max_size,
@@ -157,6 +174,7 @@ impl TransportConfig {
         emulation_json: Option<Arc<str>>,
         proxy: Option<Arc<str>>,
         insecure: bool,
+        trust_store: TrustStoreMode,
         pool_idle_timeout: Option<u64>,
         pool_max_idle_per_host: Option<usize>,
         pool_max_size: Option<u32>,
@@ -169,6 +187,7 @@ impl TransportConfig {
             emulation_json,
             proxy,
             insecure,
+            trust_store,
             pool_idle_timeout: pool_idle_timeout.map(Duration::from_millis),
             pool_max_idle_per_host,
             pool_max_size,
@@ -219,6 +238,33 @@ static NEXT_BODY_HANDLE: AtomicU64 = AtomicU64::new(1);
 
 fn next_body_handle() -> u64 {
     NEXT_BODY_HANDLE.fetch_add(1, Ordering::Relaxed)
+}
+
+fn build_cert_store(mode: TrustStoreMode) -> Result<CertStore> {
+    match mode {
+        TrustStoreMode::Mozilla => CertStore::builder()
+            .add_der_certs(webpki_root_certs::TLS_SERVER_ROOT_CERTS)
+            .build()
+            .context("Failed to build Mozilla trust store"),
+        TrustStoreMode::DefaultPaths => CertStore::builder()
+            .set_default_paths()
+            .build()
+            .context("Failed to build default-paths trust store"),
+        TrustStoreMode::Combined => {
+            let combined = CertStore::builder()
+                .set_default_paths()
+                .add_der_certs(webpki_root_certs::TLS_SERVER_ROOT_CERTS)
+                .build();
+
+            match combined {
+                Ok(store) => Ok(store),
+                Err(_) => CertStore::builder()
+                    .add_der_certs(webpki_root_certs::TLS_SERVER_ROOT_CERTS)
+                    .build()
+                    .context("Failed to build combined trust store"),
+            }
+        }
+    }
 }
 
 pub fn store_body_stream(stream: ResponseBodyStream) -> u64 {
@@ -550,6 +596,8 @@ fn build_client(config: &TransportConfig) -> Result<ResolvedClient> {
 
     if config.insecure {
         client_builder = client_builder.cert_verification(false);
+    } else {
+        client_builder = client_builder.cert_store(build_cert_store(config.trust_store)?);
     }
 
     if let Some(pool_idle_timeout) = config.pool_idle_timeout {
@@ -601,6 +649,8 @@ fn build_ephemeral_client(config: &SessionConfig) -> Result<ResolvedClient> {
 
     if config.insecure {
         client_builder = client_builder.cert_verification(false);
+    } else {
+        client_builder = client_builder.cert_store(build_cert_store(config.trust_store)?);
     }
 
     if let Some(connect_timeout) = config.connect_timeout {
@@ -649,6 +699,7 @@ pub fn create_managed_transport(
     emulation_json: Option<Arc<str>>,
     proxy: Option<Arc<str>>,
     insecure: bool,
+    trust_store: TrustStoreMode,
     pool_idle_timeout: Option<u64>,
     pool_max_idle_per_host: Option<usize>,
     pool_max_size: Option<u32>,
@@ -661,6 +712,7 @@ pub fn create_managed_transport(
         emulation_json,
         proxy,
         insecure,
+        trust_store,
         pool_idle_timeout,
         pool_max_idle_per_host,
         pool_max_size,
@@ -681,6 +733,21 @@ pub fn generate_session_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use boring2::stack::Stack;
+    use boring2::x509::store::X509StoreBuilder;
+    use boring2::x509::{X509, X509StoreContext};
+    use std::env;
+    use std::ffi::OsString;
+    use std::fs;
+
+    const BUNDLED_ROOT_PEM: &str = include_str!("../../src/test/helpers/certs/bundled-root.crt");
+    const BUNDLED_LEAF_PEM: &str = include_str!("../../src/test/helpers/certs/bundled-leaf.crt");
+    const DEFAULT_PATHS_ROOT_PEM: &str =
+        include_str!("../../src/test/helpers/certs/default-paths-root.crt");
+    const DEFAULT_PATHS_LEAF_PEM: &str =
+        include_str!("../../src/test/helpers/certs/default-paths-leaf.crt");
+
+    static ENV_LOCK: LazyLock<StdMutex<()>> = LazyLock::new(|| StdMutex::new(()));
 
     fn base_request_options() -> RequestOptions {
         RequestOptions {
@@ -698,6 +765,7 @@ mod tests {
             ephemeral: true,
             disable_default_headers: false,
             insecure: false,
+            trust_store: TrustStoreMode::Combined,
             transport_id: None,
             pool_idle_timeout: None,
             pool_max_idle_per_host: None,
@@ -725,6 +793,132 @@ mod tests {
         assert_ne!(base_config, connect_config);
         assert_ne!(base_config, read_config);
         assert_ne!(connect_config, read_config);
+    }
+
+    #[test]
+    fn ephemeral_session_cache_key_includes_trust_store() {
+        let base = base_request_options();
+
+        let mut mozilla = base_request_options();
+        mozilla.trust_store = TrustStoreMode::Mozilla;
+
+        let base_config = SessionConfig::from_request(&base);
+        let mozilla_config = SessionConfig::from_request(&mozilla);
+
+        assert_ne!(base_config, mozilla_config);
+    }
+
+    #[test]
+    fn mozilla_mode_trusts_bundled_roots_only() {
+        let store = build_test_store(TrustStoreMode::Mozilla);
+
+        assert!(verify_leaf(&store, BUNDLED_LEAF_PEM));
+        assert!(!verify_leaf(&store, DEFAULT_PATHS_LEAF_PEM));
+    }
+
+    #[test]
+    fn default_paths_mode_trusts_default_paths_roots_only() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        with_default_paths_env(DEFAULT_PATHS_ROOT_PEM, || {
+            let store = build_test_store(TrustStoreMode::DefaultPaths);
+
+            assert!(verify_leaf(&store, DEFAULT_PATHS_LEAF_PEM));
+            assert!(!verify_leaf(&store, BUNDLED_LEAF_PEM));
+        });
+    }
+
+    #[test]
+    fn combined_mode_trusts_both_sources() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        with_default_paths_env(DEFAULT_PATHS_ROOT_PEM, || {
+            let store = build_test_store(TrustStoreMode::Combined);
+
+            assert!(verify_leaf(&store, DEFAULT_PATHS_LEAF_PEM));
+            assert!(verify_leaf(&store, BUNDLED_LEAF_PEM));
+        });
+    }
+
+    fn build_test_store(mode: TrustStoreMode) -> boring2::x509::store::X509Store {
+        match mode {
+            TrustStoreMode::Mozilla => {
+                let mut builder = X509StoreBuilder::new().expect("mozilla builder");
+                builder
+                    .add_cert(X509::from_pem(BUNDLED_ROOT_PEM.as_bytes()).expect("bundled root"))
+                    .expect("add bundled root");
+                builder.build()
+            }
+            TrustStoreMode::DefaultPaths => {
+                let mut builder = X509StoreBuilder::new().expect("default-paths builder");
+                builder
+                    .set_default_paths()
+                    .expect("load default verify paths");
+                builder.build()
+            }
+            TrustStoreMode::Combined => {
+                let mut builder = X509StoreBuilder::new().expect("combined builder");
+                if builder.set_default_paths().is_err() {
+                    let mut fallback = X509StoreBuilder::new().expect("fallback builder");
+                    fallback
+                        .add_cert(
+                            X509::from_pem(BUNDLED_ROOT_PEM.as_bytes()).expect("bundled root"),
+                        )
+                        .expect("add bundled root");
+                    return fallback.build();
+                }
+
+                builder
+                    .add_cert(X509::from_pem(BUNDLED_ROOT_PEM.as_bytes()).expect("bundled root"))
+                    .expect("add bundled root");
+                builder.build()
+            }
+        }
+    }
+
+    fn verify_leaf(store: &boring2::x509::store::X509Store, leaf_pem: &str) -> bool {
+        let cert = X509::from_pem(leaf_pem.as_bytes()).expect("leaf cert");
+        let chain = Stack::new().expect("empty chain");
+        let mut context = X509StoreContext::new().expect("store context");
+
+        context
+            .init(store, &cert, &chain, |ctx| ctx.verify_cert())
+            .expect("verify leaf")
+    }
+
+    fn with_default_paths_env(root_pem: &str, test: impl FnOnce()) {
+        let temp_dir = env::temp_dir().join(format!("wreq-js-trust-store-{}", Uuid::new_v4()));
+        fs::create_dir_all(&temp_dir).expect("create temp cert dir");
+        let cert_file = temp_dir.join("ca.pem");
+        fs::write(&cert_file, root_pem).expect("write cert file");
+
+        let old_cert_file = env::var_os("SSL_CERT_FILE");
+        let old_cert_dir = env::var_os("SSL_CERT_DIR");
+
+        unsafe {
+            env::set_var("SSL_CERT_FILE", &cert_file);
+            env::set_var("SSL_CERT_DIR", &temp_dir);
+        }
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(test));
+
+        restore_env_var("SSL_CERT_FILE", old_cert_file);
+        restore_env_var("SSL_CERT_DIR", old_cert_dir);
+        fs::remove_file(cert_file).ok();
+        fs::remove_dir_all(temp_dir).ok();
+
+        if let Err(payload) = result {
+            std::panic::resume_unwind(payload);
+        }
+    }
+
+    fn restore_env_var(name: &str, value: Option<OsString>) {
+        match value {
+            Some(value) => unsafe {
+                env::set_var(name, value);
+            },
+            None => unsafe {
+                env::remove_var(name);
+            },
+        }
     }
 }
 

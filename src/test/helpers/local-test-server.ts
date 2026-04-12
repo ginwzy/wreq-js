@@ -19,6 +19,7 @@ export interface LocalTestServer {
   wsUrl: string;
   httpsSelfSignedUrl: string;
   httpsExpiredUrl: string;
+  httpsCustomCaUrl: string;
   close(): Promise<void>;
 }
 
@@ -26,6 +27,7 @@ export async function startLocalTestServer(): Promise<LocalTestServer> {
   let baseUrl = "http://127.0.0.1";
   let selfSignedBaseUrl = "https://127.0.0.1";
   let expiredBaseUrl = "https://127.0.0.1";
+  let customCaBaseUrl = "https://127.0.0.1";
 
   const sockets = new Set<Socket>();
   const hangingRequests = new Map<string, { closed: boolean }>();
@@ -35,6 +37,8 @@ export async function startLocalTestServer(): Promise<LocalTestServer> {
   const selfSignedCert = readFileSync(resolve(CERTS_DIR, "self-signed.crt"));
   const expiredKey = readFileSync(resolve(CERTS_DIR, "expired.key"));
   const expiredCert = readFileSync(resolve(CERTS_DIR, "expired.crt"));
+  const customCaKey = readFileSync(resolve(CERTS_DIR, "default-paths-leaf.key"));
+  const customCaCert = readFileSync(resolve(CERTS_DIR, "default-paths-leaf.crt"));
 
   const createRequestHandler = (getBaseUrl: () => string) => async (req: IncomingMessage, res: ServerResponse) => {
     try {
@@ -71,12 +75,18 @@ export async function startLocalTestServer(): Promise<LocalTestServer> {
     { key: expiredKey, cert: expiredCert },
     createRequestHandler(() => expiredBaseUrl),
   );
+  const customCaServer = createHttpsServer(
+    { key: customCaKey, cert: customCaCert },
+    createRequestHandler(() => customCaBaseUrl),
+  );
 
   server.on("connection", trackSockets);
   selfSignedServer.on("connection", trackSockets);
   selfSignedServer.on("secureConnection", trackSockets);
   expiredServer.on("connection", trackSockets);
   expiredServer.on("secureConnection", trackSockets);
+  customCaServer.on("connection", trackSockets);
+  customCaServer.on("secureConnection", trackSockets);
 
   server.on("connect", (req: IncomingMessage, socket: Socket, head: Buffer) => {
     // Respond with a simple JSON body to exercise CONNECT handling without tunneling.
@@ -182,6 +192,27 @@ export async function startLocalTestServer(): Promise<LocalTestServer> {
   }
   expiredBaseUrl = `https://127.0.0.1:${expiredAddress.port}`;
 
+  await new Promise<void>((resolve, reject) => {
+    const onError = (error: unknown) => {
+      customCaServer.off("listening", onListening);
+      reject(error);
+    };
+    const onListening = () => {
+      customCaServer.off("error", onError);
+      resolve();
+    };
+
+    customCaServer.once("error", onError);
+    customCaServer.once("listening", onListening);
+    customCaServer.listen(0, "127.0.0.1");
+  });
+
+  const customCaAddress = customCaServer.address() as AddressInfo | null;
+  if (!customCaAddress) {
+    throw new Error("Unable to determine custom CA HTTPS server address");
+  }
+  customCaBaseUrl = `https://127.0.0.1:${customCaAddress.port}`;
+
   const close = async () => {
     for (const socket of sockets) {
       socket.destroy();
@@ -197,6 +228,9 @@ export async function startLocalTestServer(): Promise<LocalTestServer> {
       new Promise<void>((resolve, reject) => {
         expiredServer.close((error) => (error ? reject(error) : resolve()));
       }),
+      new Promise<void>((resolve, reject) => {
+        customCaServer.close((error) => (error ? reject(error) : resolve()));
+      }),
     ]);
   };
 
@@ -205,6 +239,7 @@ export async function startLocalTestServer(): Promise<LocalTestServer> {
     wsUrl,
     httpsSelfSignedUrl: selfSignedBaseUrl,
     httpsExpiredUrl: expiredBaseUrl,
+    httpsCustomCaUrl: customCaBaseUrl,
     close,
   };
 

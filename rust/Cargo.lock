@@ -2083,6 +2083,7 @@ name = "wreq-js"
 version = "2.2.2"
 dependencies = [
  "anyhow",
+ "boring2",
  "bytes",
  "dashmap",
  "futures-util",
@@ -2094,6 +2095,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "uuid",
+ "webpki-root-certs",
  "wreq",
  "wreq-util",
 ]

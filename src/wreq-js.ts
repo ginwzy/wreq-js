@@ -31,6 +31,7 @@ import type {
   SessionHandle,
   SessionWebSocketOptions,
   TlsVersion,
+  TrustStoreMode,
   WebSocketBinaryType,
   WebSocketCloseEvent,
   WebSocketErrorEvent,
@@ -89,6 +90,7 @@ interface NativeTransportOptions {
   emulationJson?: string;
   proxy?: string;
   insecure?: boolean;
+  trustStore?: TrustStoreMode;
   poolIdleTimeout?: number;
   poolMaxIdlePerHost?: number;
   poolMaxSize?: number;
@@ -111,6 +113,7 @@ interface NativeRequestOptions {
   ephemeral: boolean;
   disableDefaultHeaders?: boolean;
   insecure?: boolean;
+  trustStore?: TrustStoreMode;
   transportId?: string;
   compress?: boolean;
 }
@@ -306,6 +309,7 @@ const bodyHandleFinalizer =
 const DEFAULT_BROWSER: BrowserProfile = "chrome_142";
 const DEFAULT_OS: EmulationOS = "macos";
 const DEFAULT_REQUEST_TIMEOUT_MS = 300_000;
+const DEFAULT_TRUST_STORE: TrustStoreMode = "combined";
 const SUPPORTED_OSES: readonly EmulationOS[] = ["windows", "macos", "linux", "android", "ios"];
 const UTF8_DECODER = new TextDecoder("utf-8");
 
@@ -314,6 +318,7 @@ type SessionDefaults = {
   proxy?: string;
   timeout?: number;
   insecure?: boolean;
+  trustStore?: TrustStoreMode;
   defaultHeaders?: HeaderTuple[];
   transportId?: string;
   ownsTransport?: boolean;
@@ -331,6 +336,7 @@ type TransportResolution = {
   mode?: ResolvedEmulationMode;
   proxy?: string;
   insecure?: boolean;
+  trustStore?: TrustStoreMode;
 };
 
 type SerializedCustomEmulation = {
@@ -391,6 +397,7 @@ function normalizeSessionOptions(options?: CreateSessionOptions): { sessionId: s
   const sessionId = options?.sessionId ?? generateSessionId();
   const defaults: SessionDefaults = {
     transportMode: resolveEmulationMode(options?.browser, options?.os, options?.emulation),
+    trustStore: DEFAULT_TRUST_STORE,
   };
 
   if (options?.proxy !== undefined) {
@@ -404,6 +411,11 @@ function normalizeSessionOptions(options?: CreateSessionOptions): { sessionId: s
 
   if (options?.insecure !== undefined) {
     defaults.insecure = options.insecure;
+  }
+
+  if (options?.trustStore !== undefined) {
+    validateTrustStore(options.trustStore);
+    defaults.trustStore = options.trustStore;
   }
 
   if (options?.defaultHeaders !== undefined) {
@@ -1310,9 +1322,12 @@ function resolveTransportContext(config: WreqRequestInit, sessionDefaults?: Sess
       config.os !== undefined ||
       config.emulation !== undefined ||
       hasProxy ||
-      config.insecure !== undefined
+      config.insecure !== undefined ||
+      config.trustStore !== undefined
     ) {
-      throw new RequestError("`transport` cannot be combined with browser/os/emulation/proxy/insecure options");
+      throw new RequestError(
+        "`transport` cannot be combined with browser/os/emulation/proxy/insecure/trustStore options",
+      );
     }
 
     return { transportId: config.transport.id };
@@ -1353,6 +1368,13 @@ function resolveTransportContext(config: WreqRequestInit, sessionDefaults?: Sess
       }
     }
 
+    if (config.trustStore !== undefined) {
+      const lockedTrustStore = sessionDefaults.trustStore ?? DEFAULT_TRUST_STORE;
+      if (config.trustStore !== lockedTrustStore) {
+        throw new RequestError("Session trustStore setting cannot be changed after creation");
+      }
+    }
+
     return { transportId: sessionDefaults.transportId };
   }
 
@@ -1365,6 +1387,7 @@ function resolveTransportContext(config: WreqRequestInit, sessionDefaults?: Sess
   if (config.insecure !== undefined) {
     resolved.insecure = config.insecure;
   }
+  resolved.trustStore = config.trustStore ?? DEFAULT_TRUST_STORE;
   return resolved;
 }
 
@@ -1670,6 +1693,16 @@ function validateTimeout(timeout?: number): void {
 
   if (timeout < 0) {
     throw new RequestError("Timeout must be 0 (no timeout) or a positive number");
+  }
+}
+
+function validateTrustStore(trustStore?: TrustStoreMode | string): void {
+  if (trustStore === undefined) {
+    return;
+  }
+
+  if (trustStore !== "combined" && trustStore !== "mozilla" && trustStore !== "defaultPaths") {
+    throw new RequestError("trustStore must be one of: combined, mozilla, defaultPaths");
   }
 }
 
@@ -2454,6 +2487,7 @@ export async function fetch(input: string | URL | Request, init?: WreqRequestIni
   if (config.timeout !== undefined) {
     validateTimeout(config.timeout);
   }
+  validateTrustStore(config.trustStore);
 
   const method = ensureMethod(config.method);
   const serializedBody = await serializeBody(config.body ?? null);
@@ -2497,6 +2531,9 @@ export async function fetch(input: string | URL | Request, init?: WreqRequestIni
     if (transport.insecure !== undefined) {
       requestOptions.insecure = transport.insecure;
     }
+    if (transport.trustStore !== undefined) {
+      requestOptions.trustStore = transport.trustStore;
+    }
   }
 
   requestOptions.timeout = timeout;
@@ -2519,6 +2556,7 @@ export async function fetch(input: string | URL | Request, init?: WreqRequestIni
 
 export async function createTransport(options?: CreateTransportOptions): Promise<Transport> {
   const mode = resolveEmulationMode(options?.browser, options?.os, options?.emulation);
+  validateTrustStore(options?.trustStore);
 
   if (options?.poolIdleTimeout !== undefined) {
     validatePositiveNumber(options.poolIdleTimeout, "poolIdleTimeout");
@@ -2540,6 +2578,7 @@ export async function createTransport(options?: CreateTransportOptions): Promise
     const transportOptions: NativeTransportOptions = {
       ...(options?.proxy !== undefined && { proxy: options.proxy }),
       ...(options?.insecure !== undefined && { insecure: options.insecure }),
+      trustStore: options?.trustStore ?? DEFAULT_TRUST_STORE,
       ...(options?.poolIdleTimeout !== undefined && { poolIdleTimeout: options.poolIdleTimeout }),
       ...(options?.poolMaxIdlePerHost !== undefined && { poolMaxIdlePerHost: options.poolMaxIdlePerHost }),
       ...(options?.poolMaxSize !== undefined && { poolMaxSize: options.poolMaxSize }),
@@ -2566,6 +2605,7 @@ export async function createSession(options?: CreateSessionOptions): Promise<Ses
     const transportOptions: NativeTransportOptions = {
       ...(defaults.proxy !== undefined && { proxy: defaults.proxy }),
       ...(defaults.insecure !== undefined && { insecure: defaults.insecure }),
+      trustStore: defaults.trustStore ?? DEFAULT_TRUST_STORE,
     };
     applyNativeEmulationMode(transportOptions, defaults.transportMode);
     transportId = nativeBinding.createTransport(transportOptions);
@@ -2659,6 +2699,10 @@ export async function request(options: RequestOptions): Promise<Response> {
 
   if (rest.insecure !== undefined) {
     init.insecure = rest.insecure;
+  }
+
+  if (rest.trustStore !== undefined) {
+    init.trustStore = rest.trustStore;
   }
 
   if (rest.disableDefaultHeaders !== undefined) {

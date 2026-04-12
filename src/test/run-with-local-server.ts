@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
@@ -49,6 +50,9 @@ async function main() {
   env.WS_TEST_URL = localServer.wsUrl;
   env.HTTPS_SELF_SIGNED_URL = localServer.httpsSelfSignedUrl;
   env.HTTPS_EXPIRED_URL = localServer.httpsExpiredUrl;
+  env.HTTPS_CUSTOM_CA_URL = localServer.httpsCustomCaUrl;
+  env.SSL_CERT_FILE = resolve(testDir, "helpers", "certs", "default-paths-root.crt");
+  env.SSL_CERT_DIR = mkdtempSync(resolve(tmpdir(), "wreq-js-empty-cert-dir-"));
 
   const nodeArgs = ["--import", "tsx", "--test", ...defaultTestFiles, ...normalizedExtraArgs];
   const testProcess = spawn(process.execPath, nodeArgs, {
