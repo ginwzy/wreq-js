@@ -39,8 +39,7 @@
     "clean": "rimraf dist rust/target rust/*.node",
     "clean:dist": "rimraf dist",
     "ci:biome": "biome ci .",
-    "docs:dev": "cd docs && mint dev",
-    "prepare": "husky"
+    "docs:dev": "cd docs && mint dev"
   },
   "keywords": [
     "cloudflare",
