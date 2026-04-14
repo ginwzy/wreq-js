@@ -48,7 +48,7 @@ strum = "0.27.2"
 wreq-util = { version = "3.0.0-rc.10", features = ["emulation-serde", "emulation-rand"] }
 
 [dev-dependencies]
-boring2 = "5.0.0-alpha.12"
+boring2 = "5.0.0-alpha.13"
 
 [profile.release]
 opt-level = 3
