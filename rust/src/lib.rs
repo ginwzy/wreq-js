@@ -7,8 +7,8 @@ use anyhow::anyhow;
 use client::{
     HTTP_RUNTIME, RedirectMode, RequestEvent, RequestOptions, Response,
     clear_managed_session, create_managed_session, create_managed_transport, drop_body_stream,
-    drop_managed_session, drop_managed_transport, generate_session_id, get_session_cookies,
-    make_request, read_body_all as native_read_body_all,
+    drop_managed_session, drop_managed_transport, generate_session_id, get_all_session_cookies,
+    get_session_cookies, make_request, read_body_all as native_read_body_all,
     read_body_chunk as native_read_body_chunk, set_session_cookie, TrustStoreMode,
 };
 use dashmap::DashMap;
@@ -1506,6 +1506,57 @@ fn get_cookies(mut cx: FunctionContext) -> JsResult<JsObject> {
     }
 }
 
+fn get_all_cookies(mut cx: FunctionContext) -> JsResult<JsArray> {
+    let session_id = cx.argument::<JsString>(0)?.value(&mut cx);
+
+    match get_all_session_cookies(&session_id) {
+        Ok(cookies) => {
+            let array = JsArray::new(&mut cx, cookies.len());
+
+            for (index, cookie) in cookies.into_iter().enumerate() {
+                let obj = cx.empty_object();
+                let name = cx.string(cookie.name);
+                let value = cx.string(cookie.value);
+                let secure = cx.boolean(cookie.secure);
+                let http_only = cx.boolean(cookie.http_only);
+
+                obj.set(&mut cx, "name", name)?;
+                obj.set(&mut cx, "value", value)?;
+                obj.set(&mut cx, "secure", secure)?;
+                obj.set(&mut cx, "httpOnly", http_only)?;
+
+                if let Some(domain) = cookie.domain {
+                    let js_domain = cx.string(domain);
+                    obj.set(&mut cx, "domain", js_domain)?;
+                }
+
+                if let Some(path) = cookie.path {
+                    let js_path = cx.string(path);
+                    obj.set(&mut cx, "path", js_path)?;
+                }
+
+                if let Some(same_site) = cookie.same_site {
+                    let js_same_site = cx.string(same_site);
+                    obj.set(&mut cx, "sameSite", js_same_site)?;
+                }
+
+                if let Some(expires_at_ms) = cookie.expires_at_ms {
+                    let js_expires_at_ms = cx.number(expires_at_ms);
+                    obj.set(&mut cx, "expiresAtMs", js_expires_at_ms)?;
+                }
+
+                array.set(&mut cx, index as u32, obj)?;
+            }
+
+            Ok(array)
+        }
+        Err(e) => {
+            let msg = format!("{:#}", e);
+            cx.throw_error(msg)
+        }
+    }
+}
+
 fn set_cookie(mut cx: FunctionContext) -> JsResult<JsUndefined> {
     let session_id = cx.argument::<JsString>(0)?.value(&mut cx);
     let name = cx.argument::<JsString>(1)?.value(&mut cx);
@@ -1534,6 +1585,7 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
     cx.export_function("clearSession", clear_session)?;
     cx.export_function("dropSession", drop_session)?;
     cx.export_function("getCookies", get_cookies)?;
+    cx.export_function("getAllCookies", get_all_cookies)?;
     cx.export_function("setCookie", set_cookie)?;
     cx.export_function("createTransport", create_transport)?;
     cx.export_function("dropTransport", drop_transport)?;

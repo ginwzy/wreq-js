@@ -1174,6 +1174,51 @@ pub fn get_session_cookies(session_id: &str, url: &str) -> Result<Vec<(String, S
     Ok(pairs)
 }
 
+#[derive(Debug, Clone)]
+pub struct SessionCookieInfo {
+    pub name: String,
+    pub value: String,
+    pub domain: Option<String>,
+    pub path: Option<String>,
+    pub secure: bool,
+    pub http_only: bool,
+    pub same_site: Option<String>,
+    pub expires_at_ms: Option<f64>,
+}
+
+pub fn get_all_session_cookies(session_id: &str) -> Result<Vec<SessionCookieInfo>> {
+    let jar = SESSION_MANAGER.jar_for(session_id)?;
+
+    Ok(jar
+        .get_all()
+        .map(|cookie| {
+            let same_site = if cookie.same_site_lax() {
+                Some("lax".to_owned())
+            } else if cookie.same_site_strict() {
+                Some("strict".to_owned())
+            } else {
+                None
+            };
+
+            let expires_at_ms = cookie
+                .expires()
+                .and_then(|expires| expires.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|duration| duration.as_millis() as f64);
+
+            SessionCookieInfo {
+                name: cookie.name().to_owned(),
+                value: cookie.value().to_owned(),
+                domain: cookie.domain().map(ToOwned::to_owned),
+                path: cookie.path().map(ToOwned::to_owned),
+                secure: cookie.secure(),
+                http_only: cookie.http_only(),
+                same_site,
+                expires_at_ms,
+            }
+        })
+        .collect())
+}
+
 fn parse_cookie_pairs(s: &str) -> Vec<(String, String)> {
     s.split("; ")
         .filter_map(|pair| {

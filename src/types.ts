@@ -19,6 +19,17 @@ export interface SessionHandle {
   readonly id: string;
 }
 
+export interface SessionCookie {
+  name: string;
+  value: string;
+  domain?: string;
+  path?: string;
+  secure: boolean;
+  httpOnly: boolean;
+  sameSite?: "lax" | "strict" | "none";
+  expiresAtMs?: number;
+}
+
 /**
  * A tuple of [name, value] pairs used for initializing headers.
  * Both name and value must be strings.

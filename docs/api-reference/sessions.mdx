@@ -109,6 +109,26 @@ const cookies: Record<string, string> = session.getCookies('https://example.com'
 
 **Returns** `Record<string, string>` — cookie name/value pairs.
 
+#### session.getAllCookies()
+
+Return every cookie currently stored in the session jar, regardless of URL matching.
+
+```typescript
+const cookies = session.getAllCookies();
+// [
+//   {
+//     name: 'session_id',
+//     value: 'abc123',
+//     secure: true,
+//     httpOnly: true,
+//     domain: 'example.com',
+//     path: '/',
+//   },
+// ]
+```
+
+**Returns** `SessionCookie[]` — all cookies in the jar, with scope metadata such as `domain`, `path`, `sameSite`, and `expiresAtMs` when available.
+
 #### session.setCookie(name, value, url)
 
 Add a cookie to the session jar, scoped to the domain/path of the given URL.

@@ -81,6 +81,69 @@ describe("HTTP sessions", () => {
       },
       (error: unknown) => error instanceof RequestError && /Session has been closed/.test(error.message),
     );
+
+    assert.throws(
+      () => {
+        session.getAllCookies();
+      },
+      (error: unknown) => error instanceof RequestError && /Session has been closed/.test(error.message),
+    );
+  });
+
+  test("getAllCookies returns cookies without needing a URL", async () => {
+    const session = await createSession({ browser: "chrome_142" });
+
+    try {
+      session.setCookie("root", "alpha", httpUrl("/"));
+      session.setCookie("nested", "beta", httpUrl("/account/settings"));
+
+      const cookies = session.getAllCookies().sort((left, right) => left.name.localeCompare(right.name));
+
+      assert.strictEqual(cookies.length, 2);
+      assert.deepStrictEqual(
+        cookies.map((cookie) => ({
+          name: cookie.name,
+          value: cookie.value,
+          secure: cookie.secure,
+          httpOnly: cookie.httpOnly,
+        })),
+        [
+          { name: "nested", value: "beta", secure: false, httpOnly: false },
+          { name: "root", value: "alpha", secure: false, httpOnly: false },
+        ],
+      );
+    } finally {
+      await session.close();
+    }
+  });
+
+  test("getAllCookies preserves duplicate cookie names across different paths", async () => {
+    const session = await createSession({ browser: "chrome_142" });
+
+    try {
+      session.setCookie("token", "root", httpUrl("/"));
+      session.setCookie("token", "admin", httpUrl("/admin/panel"));
+
+      const cookies = session
+        .getAllCookies()
+        .filter((cookie) => cookie.name === "token")
+        .sort((left, right) => left.value.localeCompare(right.value));
+
+      assert.deepStrictEqual(
+        cookies.map((cookie) => ({
+          name: cookie.name,
+          value: cookie.value,
+          secure: cookie.secure,
+          httpOnly: cookie.httpOnly,
+        })),
+        [
+          { name: "token", value: "admin", secure: false, httpOnly: false },
+          { name: "token", value: "root", secure: false, httpOnly: false },
+        ],
+      );
+    } finally {
+      await session.close();
+    }
   });
 
   test("isolates cookies for default fetch calls", async () => {

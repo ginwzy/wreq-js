@@ -30,6 +30,7 @@ import type {
   RequestDiagnostics,
   RequestEvent,
   RequestOptions,
+  SessionCookie,
   SessionHandle,
   SessionWebSocketOptions,
   TlsVersion,
@@ -138,6 +139,7 @@ let nativeBinding: {
   clearSession: (sessionId: string) => void;
   dropSession: (sessionId: string) => void;
   getCookies: (sessionId: string, url: string) => Record<string, string>;
+  getAllCookies: (sessionId: string) => SessionCookie[];
   setCookie: (sessionId: string, name: string, value: string, url: string) => void;
   createTransport: (options: NativeTransportOptions) => string;
   dropTransport: (transportId: string) => void;
@@ -1164,6 +1166,15 @@ export class Session implements SessionHandle {
     this.ensureActive();
     try {
       return nativeBinding.getCookies(this.id, String(url));
+    } catch (error) {
+      throw new RequestError(String(error));
+    }
+  }
+
+  getAllCookies(): SessionCookie[] {
+    this.ensureActive();
+    try {
+      return nativeBinding.getAllCookies(this.id);
     } catch (error) {
       throw new RequestError(String(error));
     }
