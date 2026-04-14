@@ -9,6 +9,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(__dirname, "..", "..", "..");
 const DOCS_DIR = resolve(ROOT, "docs");
 const README_PATH = resolve(ROOT, "README.md");
+const IGNORED_DOC_DIRS = new Set(["node_modules", ".git", "dist"]);
 
 function walkMarkdownFiles(dir: string): string[] {
   const entries = readdirSync(dir, { withFileTypes: true });
@@ -17,6 +18,10 @@ function walkMarkdownFiles(dir: string): string[] {
   for (const entry of entries) {
     const fullPath = resolve(dir, entry.name);
     if (entry.isDirectory()) {
+      if (IGNORED_DOC_DIRS.has(entry.name)) {
+        continue;
+      }
+
       files.push(...walkMarkdownFiles(fullPath));
       continue;
     }

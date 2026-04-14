@@ -1,7 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "tsdown";
 
-const nativeRequireEsm = fileURLToPath(new URL("./src/native-require-esm.ts", import.meta.url));
 const nativeRequireCjs = fileURLToPath(new URL("./src/native-require-cjs.ts", import.meta.url));
 
 export default defineConfig([
@@ -15,9 +14,6 @@ export default defineConfig([
     platform: "node",
     fixedExtension: false,
     outDir: "dist",
-    alias: {
-      "./native-require.js": nativeRequireEsm,
-    },
     deps: {
       neverBundle: [/\\.node$/],
       alwaysBundle: ["./types.js", "./generated-types.js"],
