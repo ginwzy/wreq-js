@@ -26,9 +26,9 @@ import type {
   LegacySessionWebSocketOptions,
   LegacyWebSocketOptions,
   NativeResponse,
+  NativeWebSocketConnection,
   RequestDiagnostics,
   RequestEvent,
-  NativeWebSocketConnection,
   RequestOptions,
   SessionHandle,
   SessionWebSocketOptions,
@@ -1394,8 +1394,7 @@ function resolveTransportContext(config: WreqRequestInit, sessionDefaults?: Sess
       }
     }
 
-    const captureDiagnostics =
-      config.captureDiagnostics ?? sessionDefaults.captureDiagnostics;
+    const captureDiagnostics = config.captureDiagnostics ?? sessionDefaults.captureDiagnostics;
     return {
       transportId: sessionDefaults.transportId,
       ...(captureDiagnostics !== undefined && { captureDiagnostics }),

@@ -738,7 +738,9 @@ fn create_transport(mut cx: FunctionContext) -> JsResult<JsString> {
         capture_diagnostics_opt,
     ) = if let Some(value) = options_value {
         if value.is_a::<JsUndefined, _>(&mut cx) || value.is_a::<JsNull, _>(&mut cx) {
-(None, None, None, None, None, None, None, None, None, None, None)
+            (
+                None, None, None, None, None, None, None, None, None, None, None, None,
+            )
         } else {
             let obj = value.downcast_or_throw::<JsObject, _>(&mut cx)?;
             let browser = obj
@@ -806,7 +808,9 @@ fn create_transport(mut cx: FunctionContext) -> JsResult<JsString> {
             )
         }
     } else {
-(None, None, None, None, None, None, None, None, None, None, None)
+        (
+            None, None, None, None, None, None, None, None, None, None, None, None,
+        )
     };
 
     let browser = browser_opt.as_deref().map(parse_emulation);
