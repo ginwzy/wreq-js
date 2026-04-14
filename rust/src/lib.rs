@@ -5,11 +5,11 @@ mod websocket;
 
 use anyhow::anyhow;
 use client::{
-    HTTP_RUNTIME, RedirectMode, RequestOptions, Response, clear_managed_session,
-    create_managed_session, create_managed_transport, drop_body_stream, drop_managed_session,
-    drop_managed_transport, generate_session_id, get_session_cookies, make_request,
-    read_body_all as native_read_body_all, read_body_chunk as native_read_body_chunk,
-    set_session_cookie, TrustStoreMode,
+    HTTP_RUNTIME, RedirectMode, RequestEvent, RequestOptions, Response,
+    clear_managed_session, create_managed_session, create_managed_transport, drop_body_stream,
+    drop_managed_session, drop_managed_transport, generate_session_id, get_session_cookies,
+    make_request, read_body_all as native_read_body_all,
+    read_body_chunk as native_read_body_chunk, set_session_cookie, TrustStoreMode,
 };
 use dashmap::DashMap;
 use futures_util::StreamExt;
@@ -166,6 +166,7 @@ fn parse_headers_from_value(
 fn js_object_to_request_options(
     cx: &mut FunctionContext,
     obj: Handle<JsObject>,
+    event_sink: Option<client::RequestEventSink>,
 ) -> NeonResult<RequestOptions> {
     // Get URL (required)
     let url: Handle<JsString> = obj.get(cx, "url")?;
@@ -288,6 +289,12 @@ fn js_object_to_request_options(
         .map(|v| v.value(cx))
         .filter(|v| !v.trim().is_empty());
 
+    let capture_diagnostics = obj
+        .get_opt(cx, "captureDiagnostics")?
+        .and_then(|v: Handle<JsValue>| v.downcast::<JsBoolean, _>(cx).ok())
+        .map(|v| v.value(cx))
+        .unwrap_or(false);
+
     let pool_idle_timeout = obj
         .get_opt(cx, "poolIdleTimeout")?
         .and_then(|v: Handle<JsValue>| v.downcast::<JsNumber, _>(cx).ok())
@@ -336,6 +343,8 @@ fn js_object_to_request_options(
         connect_timeout,
         read_timeout,
         compress,
+        capture_diagnostics,
+        event_sink,
     })
 }
 
@@ -411,6 +420,155 @@ fn response_to_js_object<'a, C: Context<'a>>(
         obj.set(cx, "contentLength", null_value)?;
     }
 
+    // Diagnostics payload (if present)
+    if let Some(diagnostics) = response.diagnostics {
+        let diagnostics_obj = cx.empty_object();
+        if let Some(total_duration_ms) = diagnostics.total_duration_ms {
+            let value = cx.number(total_duration_ms as f64);
+            diagnostics_obj.set(cx, "totalDurationMs", value)?;
+        }
+        if let Some(headers_duration_ms) = diagnostics.headers_duration_ms {
+            let value = cx.number(headers_duration_ms as f64);
+            diagnostics_obj.set(cx, "headersDurationMs", value)?;
+        }
+        if let Some(status) = diagnostics.status {
+            let value = cx.number(status as f64);
+            diagnostics_obj.set(cx, "status", value)?;
+        }
+        if let Some(local_addr) = diagnostics.local_addr {
+            let value = cx.string(local_addr);
+            diagnostics_obj.set(cx, "localAddr", value)?;
+        }
+        if let Some(remote_addr) = diagnostics.remote_addr {
+            let value = cx.string(remote_addr);
+            diagnostics_obj.set(cx, "remoteAddr", value)?;
+        }
+        let tls_present = cx.boolean(diagnostics.tls_peer_certificate_present);
+        diagnostics_obj.set(cx, "tlsPeerCertificatePresent", tls_present)?;
+        if let Some(chain_length) = diagnostics.tls_peer_certificate_chain_length {
+            let value = cx.number(chain_length as f64);
+            diagnostics_obj.set(cx, "tlsPeerCertificateChainLength", value)?;
+        }
+        obj.set(cx, "diagnostics", diagnostics_obj)?;
+    } else {
+        let null_value = cx.null();
+        obj.set(cx, "diagnostics", null_value)?;
+    }
+
+    Ok(obj)
+}
+
+fn request_event_to_js_object<'a, C: Context<'a>>(
+    cx: &mut C,
+    event: RequestEvent,
+) -> JsResult<'a, JsObject> {
+    let obj = cx.empty_object();
+
+    match event {
+        RequestEvent::RequestStart { timestamp_ms } => {
+            let event_type = cx.string("request_start");
+            let timestamp = cx.number(timestamp_ms as f64);
+            obj.set(cx, "type", event_type)?;
+            obj.set(cx, "timestamp", timestamp)?;
+        }
+        RequestEvent::RequestSent { timestamp_ms } => {
+            let event_type = cx.string("request_sent");
+            let timestamp = cx.number(timestamp_ms as f64);
+            obj.set(cx, "type", event_type)?;
+            obj.set(cx, "timestamp", timestamp)?;
+        }
+        RequestEvent::ResponseHeaders {
+            timestamp_ms,
+            status,
+            url,
+            content_length,
+        } => {
+            let event_type = cx.string("response_headers");
+            let timestamp = cx.number(timestamp_ms as f64);
+            let status_value = cx.number(status as f64);
+            let url_value = cx.string(url);
+            obj.set(cx, "type", event_type)?;
+            obj.set(cx, "timestamp", timestamp)?;
+            obj.set(cx, "status", status_value)?;
+            obj.set(cx, "url", url_value)?;
+            match content_length {
+                Some(value) => {
+                    let content_length_value = cx.number(value as f64);
+                    obj.set(cx, "contentLength", content_length_value)?;
+                }
+                None => {
+                    let null_value = cx.null();
+                    obj.set(cx, "contentLength", null_value)?;
+                }
+            };
+        }
+        RequestEvent::BodyProgress {
+            timestamp_ms,
+            downloaded_bytes,
+            content_length,
+        } => {
+            let event_type = cx.string("body_progress");
+            let timestamp = cx.number(timestamp_ms as f64);
+            let downloaded_bytes_value = cx.number(downloaded_bytes as f64);
+            obj.set(cx, "type", event_type)?;
+            obj.set(cx, "timestamp", timestamp)?;
+            obj.set(cx, "downloadedBytes", downloaded_bytes_value)?;
+            match content_length {
+                Some(value) => {
+                    let content_length_value = cx.number(value as f64);
+                    obj.set(cx, "contentLength", content_length_value)?;
+                }
+                None => {
+                    let null_value = cx.null();
+                    obj.set(cx, "contentLength", null_value)?;
+                }
+            };
+        }
+        RequestEvent::BodyComplete {
+            timestamp_ms,
+            downloaded_bytes,
+            content_length,
+        } => {
+            let event_type = cx.string("body_complete");
+            let timestamp = cx.number(timestamp_ms as f64);
+            let downloaded_bytes_value = cx.number(downloaded_bytes as f64);
+            obj.set(cx, "type", event_type)?;
+            obj.set(cx, "timestamp", timestamp)?;
+            obj.set(cx, "downloadedBytes", downloaded_bytes_value)?;
+            match content_length {
+                Some(value) => {
+                    let content_length_value = cx.number(value as f64);
+                    obj.set(cx, "contentLength", content_length_value)?;
+                }
+                None => {
+                    let null_value = cx.null();
+                    obj.set(cx, "contentLength", null_value)?;
+                }
+            };
+        }
+        RequestEvent::Done { timestamp_ms, status, url } => {
+            let event_type = cx.string("done");
+            let timestamp = cx.number(timestamp_ms as f64);
+            let status_value = cx.number(status as f64);
+            let url_value = cx.string(url);
+            obj.set(cx, "type", event_type)?;
+            obj.set(cx, "timestamp", timestamp)?;
+            obj.set(cx, "status", status_value)?;
+            obj.set(cx, "url", url_value)?;
+        }
+        RequestEvent::Error {
+            timestamp_ms,
+            message,
+        } => {
+            let event_type = cx.string("error");
+            let timestamp = cx.number(timestamp_ms as f64);
+            let message_value = cx.string(message);
+            obj.set(cx, "type", event_type)?;
+            obj.set(cx, "timestamp", timestamp)?;
+            obj.set(cx, "message", message_value)?;
+        }
+    }
+
     Ok(obj)
 }
 
@@ -425,16 +583,41 @@ fn request(mut cx: FunctionContext) -> JsResult<JsPromise> {
         .map(|b| b.value(&mut cx))
         .unwrap_or(true);
 
-    // Convert JS object to Rust struct
-    let options = js_object_to_request_options(&mut cx, options_obj)?;
-
-    // Create a promise
-    let (deferred, promise) = cx.promise();
     let settle_channel = cx.channel();
+    let event_sink = options_obj
+        .get_opt::<JsFunction, _, _>(&mut cx, "onRequestEvent")?
+        .map(|callback| {
+            let callback = Arc::new(callback.root(&mut cx));
+            let channel = settle_channel.clone();
+            Arc::new(move |event: RequestEvent| {
+                let callback = callback.clone();
+                channel.send(move |mut cx| {
+                    let cb = callback.to_inner(&mut cx);
+                    let this = cx.undefined();
+                    let event_obj = request_event_to_js_object(&mut cx, event)?;
+                    cb.call(&mut cx, this, vec![event_obj.upcast()])?;
+                    Ok(())
+                });
+            }) as client::RequestEventSink
+        });
+
+    // Convert JS object to Rust struct
+    let options = js_object_to_request_options(&mut cx, options_obj, event_sink)?;
+    let error_event_sink = options.event_sink.clone();
+
+    let (deferred, promise) = cx.promise();
 
     if !cancellable {
         HTTP_RUNTIME.spawn(async move {
             let result = make_request(options).await;
+            if let Err(ref e) = result {
+                if let Some(sink) = error_event_sink.as_ref() {
+                    sink(RequestEvent::Error {
+                        timestamp_ms: 0,
+                        message: format!("{:#}", e),
+                    });
+                }
+            }
 
             // Send result back to JS
             deferred.settle_with(&settle_channel, move |mut cx| match result {
@@ -458,6 +641,15 @@ fn request(mut cx: FunctionContext) -> JsResult<JsPromise> {
             _ = token.cancelled() => Err(anyhow!("Request aborted")),
             res = make_request(options) => res,
         };
+
+        if let Err(ref e) = result {
+            if let Some(sink) = error_event_sink.as_ref() {
+                sink(RequestEvent::Error {
+                    timestamp_ms: 0,
+                    message: format!("{:#}", e),
+                });
+            }
+        }
 
         REQUEST_CANCELLATIONS.remove(&request_id);
 
@@ -543,10 +735,11 @@ fn create_transport(mut cx: FunctionContext) -> JsResult<JsString> {
         pool_max_size_opt,
         connect_timeout_opt,
         read_timeout_opt,
+        capture_diagnostics_opt,
     ) = if let Some(value) = options_value {
         if value.is_a::<JsUndefined, _>(&mut cx) || value.is_a::<JsNull, _>(&mut cx) {
             (
-                None, None, None, None, None, None, None, None, None, None, None,
+                None, None, None, None, None, None, None, None, None, None, None, None,
             )
         } else {
             let obj = value.downcast_or_throw::<JsObject, _>(&mut cx)?;
@@ -594,6 +787,10 @@ fn create_transport(mut cx: FunctionContext) -> JsResult<JsString> {
                 .get_opt(&mut cx, "readTimeout")?
                 .and_then(|v: Handle<JsValue>| v.downcast::<JsNumber, _>(&mut cx).ok())
                 .map(|v| v.value(&mut cx) as u64);
+            let capture_diagnostics = obj
+                .get_opt(&mut cx, "captureDiagnostics")?
+                .and_then(|v: Handle<JsValue>| v.downcast::<JsBoolean, _>(&mut cx).ok())
+                .map(|v| v.value(&mut cx));
 
             (
                 browser,
@@ -607,11 +804,12 @@ fn create_transport(mut cx: FunctionContext) -> JsResult<JsString> {
                 pool_max_size,
                 connect_timeout,
                 read_timeout,
+                capture_diagnostics,
             )
         }
     } else {
         (
-            None, None, None, None, None, None, None, None, None, None, None,
+            None, None, None, None, None, None, None, None, None, None, None, None,
         )
     };
 
@@ -622,6 +820,7 @@ fn create_transport(mut cx: FunctionContext) -> JsResult<JsString> {
         .as_deref()
         .map(parse_trust_store_mode)
         .unwrap_or_default();
+    let capture_diagnostics = capture_diagnostics_opt.unwrap_or(false);
 
     match create_managed_transport(
         browser,
@@ -635,6 +834,7 @@ fn create_transport(mut cx: FunctionContext) -> JsResult<JsString> {
         pool_max_size_opt,
         connect_timeout_opt,
         read_timeout_opt,
+        capture_diagnostics,
     ) {
         Ok(id) => Ok(cx.string(id)),
         Err(e) => {

@@ -69,6 +69,14 @@ function fetch(input: string | URL | Request, init?: RequestInit): Promise<Respo
   When `true`, accepts invalid/self-signed certificates. **Use only in development.**
 </ParamField>
 
+<ParamField path="onRequestEvent" type="(event: RequestEvent) => void">
+  Optional callback for structured request lifecycle events emitted by the native layer. Use this to observe phases such as request start, response headers, and body download progress.
+</ParamField>
+
+<ParamField path="captureDiagnostics" type="boolean" default="false">
+  When `true`, captures a final diagnostics payload on the response where supported by the native layer. This can include timing, address, and TLS peer details.
+</ParamField>
+
 ## Response
 
 Returns a `Response` object with:
@@ -83,6 +91,7 @@ Returns a `Response` object with:
 - `bodyUsed`: `true` if body has been consumed
 - `contentLength`: content length from headers, or `null`
 - `cookies`: parsed response cookies as `Record<string, string | string[]>`
+- `diagnostics`: optional native diagnostics payload, or `null`
 
 ### Response methods
 
@@ -94,6 +103,24 @@ Returns a `Response` object with:
 - `clone()`: clone the response
 
 See [/concepts/compatibility-matrix](/concepts/compatibility-matrix) for detailed compatibility notes and intentional deviations.
+
+## Request lifecycle events
+
+When `onRequestEvent` is provided, `fetch()` emits structured events from the native bridge.
+
+| Event | Meaning |
+| --- | --- |
+| `request_start` | The request has started in the native layer. |
+| `request_sent` | Request headers/body have been handed off to the socket and the client is waiting for a response. |
+| `response_headers` | Response headers have been received. Includes `status` and optional `contentLength`. |
+| `body_progress` | Additional response body bytes were downloaded. Includes `downloadedBytes` and optional `contentLength`. |
+| `body_complete` | The response body finished downloading. |
+| `done` | The native request lifecycle completed successfully. |
+| `error` | The native request lifecycle failed. Includes `message` when available. |
+
+Each event includes a `timestamp`, and some events include `status`, `url`, `contentLength`, `downloadedBytes`, or `message`.
+
+For a full worked example, see [/guides/request-events](/guides/request-events).
 
 ## Convenience helpers
 
@@ -143,6 +170,28 @@ const response = await fetch('https://example.com/login', {
     password: 'pass',
   }),
 });
+```
+
+### Observe request events and diagnostics
+
+```typescript
+const response = await fetch('https://example.com/large-file', {
+  browser: 'chrome_142',
+  captureDiagnostics: true,
+  onRequestEvent(event) {
+    if (event.type === 'response_headers') {
+      console.log('status:', event.status);
+      console.log('content-length:', event.contentLength);
+    }
+
+    if (event.type === 'body_progress' && event.contentLength) {
+      const pct = ((event.downloadedBytes ?? 0) / event.contentLength) * 100;
+      console.log(`downloaded ${pct.toFixed(1)}%`);
+    }
+  },
+});
+
+console.log(response.diagnostics);
 ```
 
 ### With timeout and abort

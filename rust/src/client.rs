@@ -8,13 +8,13 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 use wreq::cookie::Jar;
 use wreq::header::OrigHeaderMap;
-use wreq::tls::CertStore;
+use wreq::tls::{CertStore, TlsInfo};
 use wreq::{Client as HttpClient, Method, Proxy, redirect};
 
 use crate::custom_emulation::resolve_emulation;
@@ -69,7 +69,55 @@ impl RedirectMode {
     }
 }
 
+pub type RequestEventSink = Arc<dyn Fn(RequestEvent) + Send + Sync>;
+
 #[derive(Debug, Clone)]
+pub enum RequestEvent {
+    RequestStart {
+        timestamp_ms: u64,
+    },
+    RequestSent {
+        timestamp_ms: u64,
+    },
+    ResponseHeaders {
+        timestamp_ms: u64,
+        status: u16,
+        url: String,
+        content_length: Option<u64>,
+    },
+    BodyProgress {
+        timestamp_ms: u64,
+        downloaded_bytes: u64,
+        content_length: Option<u64>,
+    },
+    BodyComplete {
+        timestamp_ms: u64,
+        downloaded_bytes: u64,
+        content_length: Option<u64>,
+    },
+    Done {
+        timestamp_ms: u64,
+        status: u16,
+        url: String,
+    },
+    Error {
+        timestamp_ms: u64,
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct RequestDiagnostics {
+    pub total_duration_ms: Option<u64>,
+    pub headers_duration_ms: Option<u64>,
+    pub status: Option<u16>,
+    pub local_addr: Option<String>,
+    pub remote_addr: Option<String>,
+    pub tls_peer_certificate_present: bool,
+    pub tls_peer_certificate_chain_length: Option<usize>,
+}
+
+#[derive(Clone)]
 pub struct RequestOptions {
     pub url: String,
     pub browser: Option<BrowserEmulation>,
@@ -93,6 +141,8 @@ pub struct RequestOptions {
     pub connect_timeout: Option<u64>,
     pub read_timeout: Option<u64>,
     pub compress: bool,
+    pub capture_diagnostics: bool,
+    pub event_sink: Option<RequestEventSink>,
 }
 
 #[derive(Debug, Clone)]
@@ -104,6 +154,7 @@ pub struct Response {
     pub cookies: Vec<(String, String)>,
     pub url: String,
     pub content_length: Option<u64>,
+    pub diagnostics: Option<RequestDiagnostics>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -116,6 +167,7 @@ struct SessionConfig {
     trust_store: TrustStoreMode,
     connect_timeout: Option<Duration>,
     read_timeout: Option<Duration>,
+    capture_diagnostics: bool,
 }
 
 impl SessionConfig {
@@ -130,6 +182,7 @@ impl SessionConfig {
             trust_store: options.trust_store,
             connect_timeout: options.connect_timeout.map(Duration::from_millis),
             read_timeout: options.read_timeout.map(Duration::from_millis),
+            capture_diagnostics: options.capture_diagnostics,
         }
     }
 }
@@ -147,6 +200,7 @@ struct TransportConfig {
     pool_max_size: Option<u32>,
     connect_timeout: Option<Duration>,
     read_timeout: Option<Duration>,
+    capture_diagnostics: bool,
 }
 
 impl TransportConfig {
@@ -164,6 +218,7 @@ impl TransportConfig {
             pool_max_size: options.pool_max_size,
             connect_timeout: options.connect_timeout.map(Duration::from_millis),
             read_timeout: options.read_timeout.map(Duration::from_millis),
+            capture_diagnostics: options.capture_diagnostics,
         }
     }
 
@@ -180,6 +235,7 @@ impl TransportConfig {
         pool_max_size: Option<u32>,
         connect_timeout: Option<u64>,
         read_timeout: Option<u64>,
+        capture_diagnostics: bool,
     ) -> Self {
         Self {
             browser,
@@ -193,6 +249,7 @@ impl TransportConfig {
             pool_max_size,
             connect_timeout: connect_timeout.map(Duration::from_millis),
             read_timeout: read_timeout.map(Duration::from_millis),
+            capture_diagnostics,
         }
     }
 }
@@ -229,12 +286,54 @@ struct EphemeralClientManager {
 
 pub type ResponseBodyStream = Pin<Box<dyn Stream<Item = wreq::Result<Bytes>> + Send>>;
 
+#[derive(Clone)]
+struct BodyEventState {
+    sink: RequestEventSink,
+    content_length: Option<u64>,
+    downloaded_bytes: Arc<AtomicU64>,
+    status: u16,
+    url: String,
+}
+
 static BODY_STREAMS: LazyLock<Cache<u64, Arc<Mutex<ResponseBodyStream>>>> = LazyLock::new(|| {
     Cache::builder()
         .time_to_idle(Duration::from_secs(300))
         .build()
 });
+static BODY_EVENT_STATES: LazyLock<DashMap<u64, BodyEventState>> = LazyLock::new(DashMap::new);
 static NEXT_BODY_HANDLE: AtomicU64 = AtomicU64::new(1);
+
+fn emit_request_event(sink: &Option<RequestEventSink>, event: RequestEvent) {
+    if let Some(sink) = sink {
+        sink(event);
+    }
+}
+
+fn emit_body_progress(state: &BodyEventState, chunk_len: u64) {
+    let downloaded = state
+        .downloaded_bytes
+        .fetch_add(chunk_len, Ordering::Relaxed)
+        + chunk_len;
+    (state.sink)(RequestEvent::BodyProgress {
+        timestamp_ms: 0,
+        downloaded_bytes: downloaded,
+        content_length: state.content_length,
+    });
+}
+
+fn emit_body_complete(state: &BodyEventState) {
+    let downloaded = state.downloaded_bytes.load(Ordering::Relaxed);
+    (state.sink)(RequestEvent::BodyComplete {
+        timestamp_ms: 0,
+        downloaded_bytes: downloaded,
+        content_length: state.content_length,
+    });
+    (state.sink)(RequestEvent::Done {
+        timestamp_ms: 0,
+        status: state.status,
+        url: state.url.clone(),
+    });
+}
 
 fn next_body_handle() -> u64 {
     NEXT_BODY_HANDLE.fetch_add(1, Ordering::Relaxed)
@@ -282,13 +381,27 @@ pub async fn read_body_chunk(handle: u64) -> Result<Option<Bytes>> {
     let next = guard.next().await;
 
     match next {
-        Some(Ok(bytes)) => Ok(Some(bytes)),
+        Some(Ok(bytes)) => {
+            if let Some(state) = BODY_EVENT_STATES.get(&handle) {
+                emit_body_progress(&state, bytes.len() as u64);
+            }
+            Ok(Some(bytes))
+        }
         Some(Err(err)) => {
             BODY_STREAMS.invalidate(&handle);
+            if let Some((_, state)) = BODY_EVENT_STATES.remove(&handle) {
+                (state.sink)(RequestEvent::Error {
+                    timestamp_ms: 0,
+                    message: format!("{:#}", err),
+                });
+            }
             Err(err.into())
         }
         None => {
             BODY_STREAMS.invalidate(&handle);
+            if let Some((_, state)) = BODY_EVENT_STATES.remove(&handle) {
+                emit_body_complete(&state);
+            }
             Ok(None)
         }
     }
@@ -307,7 +420,14 @@ pub async fn read_body_all(handle: u64) -> Result<Bytes> {
     while let Some(result) = guard.next().await {
         let bytes = result?;
         total_len += bytes.len();
+        if let Some(state) = BODY_EVENT_STATES.get(&handle) {
+            emit_body_progress(&state, bytes.len() as u64);
+        }
         chunks.push(bytes);
+    }
+
+    if let Some((_, state)) = BODY_EVENT_STATES.remove(&handle) {
+        emit_body_complete(&state);
     }
 
     // Fast path: single chunk or empty
@@ -328,6 +448,7 @@ pub async fn read_body_all(handle: u64) -> Result<Bytes> {
 
 pub fn drop_body_stream(handle: u64) {
     BODY_STREAMS.invalidate(&handle);
+    BODY_EVENT_STATES.remove(&handle);
 }
 
 impl TransportManager {
@@ -458,8 +579,17 @@ async fn make_request_inner(
         redirect,
         disable_default_headers,
         compress,
+        capture_diagnostics,
+        event_sink,
         ..
     } = options;
+    let start = Instant::now();
+    emit_request_event(
+        &event_sink,
+        RequestEvent::RequestStart {
+            timestamp_ms: 0,
+        },
+    );
 
     // Methods are already normalized to uppercase in JS; default to GET when empty.
     let method = if method.is_empty() {
@@ -522,6 +652,13 @@ async fn make_request_inner(
 
     request = request.cookie_provider(cookie_jar);
 
+    emit_request_event(
+        &event_sink,
+        RequestEvent::RequestSent {
+            timestamp_ms: start.elapsed().as_millis() as u64,
+        },
+    );
+
     // Execute request
     let response = request
         .send()
@@ -548,6 +685,35 @@ async fn make_request_inner(
         .collect();
 
     let mut content_length = response.content_length();
+    emit_request_event(
+        &event_sink,
+        RequestEvent::ResponseHeaders {
+            timestamp_ms: start.elapsed().as_millis() as u64,
+            status,
+            url: final_url.clone(),
+            content_length,
+        },
+    );
+
+    let diagnostics = if capture_diagnostics {
+        let tls_info = response.extensions().get::<TlsInfo>();
+        Some(RequestDiagnostics {
+            total_duration_ms: None,
+            headers_duration_ms: Some(start.elapsed().as_millis() as u64),
+            status: Some(status),
+            local_addr: response.local_addr().map(|addr| addr.to_string()),
+            remote_addr: response.remote_addr().map(|addr| addr.to_string()),
+            tls_peer_certificate_present: tls_info
+                .and_then(|info| info.peer_certificate())
+                .is_some(),
+            tls_peer_certificate_chain_length: tls_info
+                .and_then(|info| info.peer_certificate_chain())
+                .map(|chain| chain.count()),
+        })
+    } else {
+        None
+    };
+
     let allows_body = response_allows_body(status, method.as_ref());
 
     let (body_handle, body_bytes) = if allows_body {
@@ -558,14 +724,56 @@ async fn make_request_inner(
         if inline_eligible {
             let bytes = response.bytes().await?;
             content_length = Some(bytes.len() as u64);
+            if let Some(sink) = event_sink.as_ref() {
+                sink(RequestEvent::BodyProgress {
+                    timestamp_ms: start.elapsed().as_millis() as u64,
+                    downloaded_bytes: bytes.len() as u64,
+                    content_length,
+                });
+                sink(RequestEvent::BodyComplete {
+                    timestamp_ms: start.elapsed().as_millis() as u64,
+                    downloaded_bytes: bytes.len() as u64,
+                    content_length,
+                });
+                sink(RequestEvent::Done {
+                    timestamp_ms: start.elapsed().as_millis() as u64,
+                    status,
+                    url: final_url.clone(),
+                });
+            }
             (None, Some(bytes))
         } else {
             let stream: ResponseBodyStream = Box::pin(response.bytes_stream());
-            (Some(store_body_stream(stream)), None)
+            let handle = store_body_stream(stream);
+            if let Some(sink) = event_sink.as_ref() {
+                BODY_EVENT_STATES.insert(
+                    handle,
+                    BodyEventState {
+                        sink: sink.clone(),
+                        content_length,
+                        downloaded_bytes: Arc::new(AtomicU64::new(0)),
+                        status,
+                        url: final_url.clone(),
+                    },
+                );
+            }
+            (Some(handle), None)
         }
     } else {
+        if let Some(sink) = event_sink.as_ref() {
+            sink(RequestEvent::Done {
+                timestamp_ms: start.elapsed().as_millis() as u64,
+                status,
+                url: final_url.clone(),
+            });
+        }
         (None, None)
     };
+
+    let diagnostics = diagnostics.map(|mut diagnostics| {
+        diagnostics.total_duration_ms = Some(start.elapsed().as_millis() as u64);
+        diagnostics
+    });
 
     Ok(Response {
         status,
@@ -575,6 +783,7 @@ async fn make_request_inner(
         cookies,
         url: final_url,
         content_length,
+        diagnostics,
     })
 }
 
@@ -620,6 +829,10 @@ fn build_client(config: &TransportConfig) -> Result<ResolvedClient> {
         client_builder = client_builder.read_timeout(read_timeout);
     }
 
+    if config.capture_diagnostics {
+        client_builder = client_builder.tls_info(true);
+    }
+
     let http_client = client_builder
         .build()
         .context("Failed to build HTTP client")?;
@@ -659,6 +872,10 @@ fn build_ephemeral_client(config: &SessionConfig) -> Result<ResolvedClient> {
 
     if let Some(read_timeout) = config.read_timeout {
         client_builder = client_builder.read_timeout(read_timeout);
+    }
+
+    if config.capture_diagnostics {
+        client_builder = client_builder.tls_info(true);
     }
 
     let http_client = client_builder
@@ -705,6 +922,7 @@ pub fn create_managed_transport(
     pool_max_size: Option<u32>,
     connect_timeout: Option<u64>,
     read_timeout: Option<u64>,
+    capture_diagnostics: bool,
 ) -> Result<String> {
     let config = TransportConfig::new(
         browser,
@@ -718,6 +936,7 @@ pub fn create_managed_transport(
         pool_max_size,
         connect_timeout,
         read_timeout,
+        capture_diagnostics,
     );
     TRANSPORT_MANAGER.create_transport(config)
 }
@@ -773,6 +992,8 @@ mod tests {
             connect_timeout: None,
             read_timeout: None,
             compress: true,
+            capture_diagnostics: false,
+            event_sink: None,
         }
     }
 
