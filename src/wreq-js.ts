@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { STATUS_CODES } from "node:http";
-import { createRequire } from "node:module";
 import { Readable } from "node:stream";
 import { ReadableStream } from "node:stream/web";
+import { nativeRequire as require } from "./native-require.js";
 import type {
   AlpnProtocol,
   AlpsProtocol,
@@ -172,9 +172,6 @@ function detectLibc(): "gnu" | "musl" | undefined {
     return "gnu";
   }
 }
-
-const require =
-  typeof import.meta !== "undefined" && import.meta.url ? createRequire(import.meta.url) : createRequire(__filename);
 
 function loadNativeBinding() {
   const platform = process.platform;

@@ -17,7 +17,7 @@
   "scripts": {
     "build": "npm run build:rust && npm run build:ts",
     "build:rust": "napi build --platform --release --manifest-path rust/Cargo.toml",
-    "build:ts": "tsup",
+    "build:ts": "tsdown",
     "artifacts": "napi artifacts",
     "test": "npm run test:run",
     "test:run": "tsx src/test/run-with-local-server.ts",
@@ -88,7 +88,7 @@
     "husky": "^9.1.7",
     "mint": "^4.2.503",
     "rimraf": "^6.1.3",
-    "tsup": "^8.5.1",
+    "tsdown": "^0.21.8",
     "tsx": "^4.21.0",
     "typescript": "^6.0.2"
   },
