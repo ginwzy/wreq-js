@@ -1,6 +1,6 @@
 # freq-js
 
-[![npm](https://img.shields.io/npm/v/freq-js.svg)](https://www.npmjs.com/package/freq-js)
+[![npm](https://img.shields.io/npm/v/%40zionsssx%2Ffreq-js.svg)](https://www.npmjs.com/package/@zionsssx/freq-js)
 
 > **Fork notice**: `freq-js` is a fork of [`wreq-js`](https://github.com/sqdshguy/wreq-js) by Oleksandr Herasymov and will-work-for-meal. All credit for the original design goes to them. This fork adds/adjusts features for personal use; see git history for specifics.
 
@@ -46,11 +46,11 @@ Quick links:
 ## Installation
 
 ```bash
-npm install freq-js
+npm install @zionsssx/freq-js
 # or
-yarn add freq-js
-pnpm add freq-js
-bun add freq-js
+yarn add @zionsssx/freq-js
+pnpm add @zionsssx/freq-js
+bun add @zionsssx/freq-js
 ```
 
 Current configured native target matrix in `package.json` includes:
@@ -63,7 +63,7 @@ If a matching prebuilt artifact is unavailable for your environment, installatio
 ## Quick start
 
 ```ts
-import { fetch } from 'freq-js';
+import { fetch } from '@zionsssx/freq-js';
 
 const res = await fetch('https://example.com/api', {
   browser: 'chrome_142',
@@ -82,7 +82,7 @@ For **most real-world workloads**, start with a session and reuse it across requ
 This keeps one cookie and request context for multi step flows.
 
 ```ts
-import { createSession } from 'freq-js';
+import { createSession } from '@zionsssx/freq-js';
 
 const session = await createSession({ browser: 'chrome_142', os: 'windows' });
 
@@ -102,7 +102,7 @@ More session patterns: https://wreq.sqdsh.win
 Use the helper for a connected socket from one `await`.
 
 ```ts
-import { websocket } from 'freq-js';
+import { websocket } from '@zionsssx/freq-js';
 
 const ws = await websocket('wss://example.com/ws', {
   browser: 'chrome_142',
@@ -122,7 +122,7 @@ ws.close(1000, 'done');
 Use the constructor when you want browser like `CONNECTING` behavior.
 
 ```ts
-import { WebSocket } from 'freq-js';
+import { WebSocket } from '@zionsssx/freq-js';
 
 const ws = new WebSocket('wss://example.com/ws', {
   browser: 'chrome_142',
@@ -137,7 +137,7 @@ ws.onopen = () => {
 Use `session.websocket(...)` to reuse cookies and transport settings from session HTTP calls.
 
 ```ts
-import { createSession } from 'freq-js';
+import { createSession } from '@zionsssx/freq-js';
 
 const session = await createSession({ browser: 'chrome_142' });
 
