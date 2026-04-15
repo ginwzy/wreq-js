@@ -180,13 +180,14 @@ jobs:
               set -eux
               GOARCH=\$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
               apt-get update -qq
-              apt-get install -y -qq cmake perl libclang-dev
+              apt-get install -y -qq cmake perl libclang-dev clang
+              export LIBCLANG_PATH=\$(llvm-config --libdir)
               curl -sSfL \"https://go.dev/dl/go1.21.13.linux-\${GOARCH}.tar.gz\" | tar -C /usr/local -xz
               export PATH=\$PATH:/usr/local/go/bin
               curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain stable --target ${{ matrix.settings.target }} --profile minimal
               source \$HOME/.cargo/env
               npm ci
-              ${{ matrix.settings.build }}
+              LIBCLANG_PATH=\$LIBCLANG_PATH ${{ matrix.settings.build }}
             "
 
       - name: Build native module (other non-musl targets)
