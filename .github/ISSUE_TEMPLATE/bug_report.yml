@@ -18,9 +18,9 @@ body:
       description: Minimal code to reproduce the issue
       render: typescript
       placeholder: |
-        import wreq from 'wreq-js';
+        import { fetch } from 'freq-js';
 
-        const res = await wreq('https://example.com');
+        const res = await fetch('https://example.com');
     validations:
       required: true
 
@@ -36,8 +36,8 @@ body:
   - type: input
     id: version
     attributes:
-      label: wreq-js version
-      placeholder: 2.1.1
+      label: freq-js version
+      placeholder: 0.1.0
     validations:
       required: true
 

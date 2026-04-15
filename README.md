@@ -1,10 +1,10 @@
-# wreq-js
+# freq-js
 
-[![npm](https://img.shields.io/npm/v/wreq-js.svg)](https://www.npmjs.com/package/wreq-js)
-[![CI](https://github.com/sqdshguy/wreq-js/actions/workflows/test.yml/badge.svg)](https://github.com/sqdshguy/wreq-js/actions/workflows/test.yml)
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/sqdshguy/wreq-js)
+[![npm](https://img.shields.io/npm/v/freq-js.svg)](https://www.npmjs.com/package/freq-js)
 
-`wreq-js` is a Node.js and TypeScript HTTP client that helps you bypass TLS fingerprinting checks used by services like Cloudflare and DataDome, powered by native Rust bindings from [wreq](https://github.com/0x676e67/wreq).
+> **Fork notice**: `freq-js` is a fork of [`wreq-js`](https://github.com/sqdshguy/wreq-js) by Oleksandr Herasymov and will-work-for-meal. All credit for the original design goes to them. This fork adds/adjusts features for personal use; see git history for specifics.
+
+`freq-js` is a Node.js and TypeScript HTTP client that helps you bypass TLS fingerprinting checks used by services like Cloudflare and DataDome, powered by native Rust bindings from [wreq](https://github.com/0x676e67/wreq).
 
 If your requests work in a browser but get blocked from Node.js because your network fingerprint looks wrong, this is for you.
 You keep a fetch style API and get browser profile level network behavior without running a full browser.
@@ -22,7 +22,7 @@ Common search terms: cloudflare bypass, datadome bypass, tls fingerprinting, ja3
 
 | Library | Approach | API | Notes |
 |---------|----------|-----|-------|
-| **wreq-js** | Rust native bindings ([wreq](https://github.com/0x676e67/wreq)) | Fetch style, TypeScript first | Profile labels and network behavior come from the native layer |
+| **freq-js** | Rust native bindings ([wreq](https://github.com/0x676e67/wreq)) | Fetch style, TypeScript first | Profile labels and network behavior come from the native layer |
 | [CycleTLS](https://github.com/Danny-Dasilva/CycleTLS) | Go subprocess bridge | Promise based | Subprocess model |
 | [got-scraping](https://github.com/apify/got-scraping) | JavaScript HTTP client customization | `got` based | Header and request customization |
 | [node-tls-client](https://github.com/Sahil1337/node-tls-client) | Native shared library bindings | Custom | Behavior depends on upstream native layer |
@@ -46,11 +46,11 @@ Quick links:
 ## Installation
 
 ```bash
-npm install wreq-js
+npm install freq-js
 # or
-yarn add wreq-js
-pnpm add wreq-js
-bun add wreq-js
+yarn add freq-js
+pnpm add freq-js
+bun add freq-js
 ```
 
 Current configured native target matrix in `package.json` includes:
@@ -63,7 +63,7 @@ If a matching prebuilt artifact is unavailable for your environment, installatio
 ## Quick start
 
 ```ts
-import { fetch } from 'wreq-js';
+import { fetch } from 'freq-js';
 
 const res = await fetch('https://example.com/api', {
   browser: 'chrome_142',
@@ -82,7 +82,7 @@ For **most real-world workloads**, start with a session and reuse it across requ
 This keeps one cookie and request context for multi step flows.
 
 ```ts
-import { createSession } from 'wreq-js';
+import { createSession } from 'freq-js';
 
 const session = await createSession({ browser: 'chrome_142', os: 'windows' });
 
@@ -102,7 +102,7 @@ More session patterns: https://wreq.sqdsh.win
 Use the helper for a connected socket from one `await`.
 
 ```ts
-import { websocket } from 'wreq-js';
+import { websocket } from 'freq-js';
 
 const ws = await websocket('wss://example.com/ws', {
   browser: 'chrome_142',
@@ -122,7 +122,7 @@ ws.close(1000, 'done');
 Use the constructor when you want browser like `CONNECTING` behavior.
 
 ```ts
-import { WebSocket } from 'wreq-js';
+import { WebSocket } from 'freq-js';
 
 const ws = new WebSocket('wss://example.com/ws', {
   browser: 'chrome_142',
@@ -137,7 +137,7 @@ ws.onopen = () => {
 Use `session.websocket(...)` to reuse cookies and transport settings from session HTTP calls.
 
 ```ts
-import { createSession } from 'wreq-js';
+import { createSession } from 'freq-js';
 
 const session = await createSession({ browser: 'chrome_142' });
 
@@ -158,7 +158,7 @@ try {
 
 ## When to use
 
-Use `wreq-js` when your Node.js HTTP or WebSocket traffic gets blocked because of TLS fingerprinting or browser profile mismatches.
+Use `freq-js` when your Node.js HTTP or WebSocket traffic gets blocked because of TLS fingerprinting or browser profile mismatches.
 It is a good fit when you want Cloudflare bypass and DataDome bypass style network behavior with a familiar fetch style API.
 It handles transport and fingerprint level behavior, not CAPTCHA solving and not in page JavaScript execution.
 

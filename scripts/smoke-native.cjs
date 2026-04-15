@@ -18,7 +18,7 @@ if (!platformArch) {
   throw new Error("Set WREQ_TARGET or WREQ_PLATFORM_ARCH to locate the native binding.");
 }
 
-const binaryName = `wreq-js.${platformArch}.node`;
+const binaryName = `freq-js.${platformArch}.node`;
 const bindingPath = path.join(__dirname, "..", "rust", binaryName);
 const binding = require(bindingPath);
 

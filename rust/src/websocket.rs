@@ -11,7 +11,7 @@ use wreq::header::OrigHeaderMap;
 use wreq::ws::WebSocket;
 use wreq::ws::message::{CloseCode, CloseFrame, Message};
 
-use crate::client::{get_session_cookie_jar, get_transport_resolved};
+use crate::client::{build_proxy, get_session_cookie_jar, get_transport_resolved};
 use crate::custom_emulation::resolve_emulation;
 use wreq_util::{Emulation as BrowserEmulation, EmulationOS as BrowserEmulationOS};
 
@@ -29,6 +29,7 @@ pub struct WebSocketOptions {
     pub headers: Vec<(String, String)>,
     pub protocols: Vec<String>,
     pub proxy: Option<Arc<str>>,
+    pub proxy_headers: Vec<(String, String)>,
     pub max_frame_size: Option<usize>,
     pub max_message_size: Option<usize>,
 }
@@ -136,7 +137,7 @@ pub async fn connect_websocket(
 
     // Apply proxy if present
     if let Some(proxy_url) = options.proxy.as_deref() {
-        let proxy = wreq::Proxy::all(proxy_url).context("Failed to create proxy")?;
+        let proxy = build_proxy(proxy_url, &options.proxy_headers)?;
         client_builder = client_builder.proxy(proxy);
     }
 

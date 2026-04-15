@@ -5,6 +5,91 @@ import { describe, test } from "node:test";
 import { createSession, createTransport, RequestError, fetch as wreqFetch } from "../../wreq-js.js";
 import { httpUrl } from "../helpers/http.js";
 
+type ProxiedRequest = {
+  url: string;
+  proxyToken?: string;
+};
+
+async function startHttpProxyServer(): Promise<{
+  proxiedRequests: ProxiedRequest[];
+  proxyUrl: string;
+  close: () => Promise<void>;
+}> {
+  const proxiedRequests: ProxiedRequest[] = [];
+  const proxyServer = createServer((req, res) => {
+    const proxyTokenHeader = req.headers["x-proxy-token"];
+    const proxiedRequest: ProxiedRequest = {
+      url: req.url ?? "",
+    };
+    const proxyToken = Array.isArray(proxyTokenHeader) ? proxyTokenHeader.join(", ") : proxyTokenHeader;
+    if (proxyToken !== undefined) {
+      proxiedRequest.proxyToken = proxyToken;
+    }
+    proxiedRequests.push(proxiedRequest);
+
+    let target: URL;
+    try {
+      if (req.url && /^https?:\/\//i.test(req.url)) {
+        target = new URL(req.url);
+      } else {
+        const host = req.headers.host;
+        if (!host) {
+          res.statusCode = 400;
+          res.end("Missing Host header");
+          return;
+        }
+        target = new URL(req.url ?? "/", `http://${host}`);
+      }
+    } catch (error) {
+      res.statusCode = 400;
+      res.end(String(error));
+      return;
+    }
+
+    const upstream = httpRequest(
+      target,
+      {
+        method: req.method,
+        headers: req.headers,
+      },
+      (upstreamRes) => {
+        res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
+        upstreamRes.pipe(res);
+      },
+    );
+
+    upstream.on("error", (error) => {
+      if (!res.headersSent) {
+        res.statusCode = 502;
+      }
+      res.end(String(error));
+    });
+
+    req.pipe(upstream);
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    proxyServer.once("error", reject);
+    proxyServer.listen(0, "127.0.0.1", () => {
+      proxyServer.off("error", reject);
+      resolve();
+    });
+  });
+
+  const address = proxyServer.address() as AddressInfo | null;
+  if (!address) {
+    await new Promise<void>((resolve, reject) => proxyServer.close((error) => (error ? reject(error) : resolve())));
+    throw new Error("Failed to determine proxy server address");
+  }
+
+  return {
+    proxiedRequests,
+    proxyUrl: `http://127.0.0.1:${address.port}`,
+    close: () =>
+      new Promise<void>((resolve, reject) => proxyServer.close((error) => (error ? reject(error) : resolve()))),
+  };
+}
+
 describe("Transport API", () => {
   test("creates and closes transports", async () => {
     const transport = await createTransport({ browser: "chrome_142" });
@@ -31,68 +116,11 @@ describe("Transport API", () => {
   });
 
   test("routes requests through a real HTTP proxy", async () => {
-    const proxiedRequests: string[] = [];
-    const proxyServer = createServer((req, res) => {
-      proxiedRequests.push(req.url ?? "");
-
-      let target: URL;
-      try {
-        if (req.url && /^https?:\/\//i.test(req.url)) {
-          target = new URL(req.url);
-        } else {
-          const host = req.headers.host;
-          if (!host) {
-            res.statusCode = 400;
-            res.end("Missing Host header");
-            return;
-          }
-          target = new URL(req.url ?? "/", `http://${host}`);
-        }
-      } catch (error) {
-        res.statusCode = 400;
-        res.end(String(error));
-        return;
-      }
-
-      const upstream = httpRequest(
-        target,
-        {
-          method: req.method,
-          headers: req.headers,
-        },
-        (upstreamRes) => {
-          res.writeHead(upstreamRes.statusCode ?? 502, upstreamRes.headers);
-          upstreamRes.pipe(res);
-        },
-      );
-
-      upstream.on("error", (error) => {
-        if (!res.headersSent) {
-          res.statusCode = 502;
-        }
-        res.end(String(error));
-      });
-
-      req.pipe(upstream);
-    });
-
-    await new Promise<void>((resolve, reject) => {
-      proxyServer.once("error", reject);
-      proxyServer.listen(0, "127.0.0.1", () => {
-        proxyServer.off("error", reject);
-        resolve();
-      });
-    });
-
-    const address = proxyServer.address() as AddressInfo | null;
-    if (!address) {
-      await new Promise<void>((resolve, reject) => proxyServer.close((error) => (error ? reject(error) : resolve())));
-      throw new Error("Failed to determine proxy server address");
-    }
+    const proxyServer = await startHttpProxyServer();
 
     const transport = await createTransport({
       browser: "chrome_142",
-      proxy: `http://127.0.0.1:${address.port}`,
+      proxy: proxyServer.proxyUrl,
     });
 
     try {
@@ -103,12 +131,74 @@ describe("Transport API", () => {
 
       assert.strictEqual(response.status, 200);
       assert.ok(
-        proxiedRequests.some((url) => url.includes("/get")),
+        proxyServer.proxiedRequests.some((request) => request.url.includes("/get")),
         "Proxy should observe proxied request URL",
       );
     } finally {
       await transport.close();
-      await new Promise<void>((resolve, reject) => proxyServer.close((error) => (error ? reject(error) : resolve())));
+      await proxyServer.close();
+    }
+  });
+
+  test("sends proxyHeaders to the proxy server for fetch, transport, and session traffic", async () => {
+    const proxyServer = await startHttpProxyServer();
+
+    try {
+      const standaloneResponse = await wreqFetch(httpUrl("/get"), {
+        browser: "chrome_142",
+        proxy: proxyServer.proxyUrl,
+        proxyHeaders: { "X-Proxy-Token": "standalone" },
+        timeout: 10_000,
+      });
+      assert.strictEqual(standaloneResponse.status, 200);
+
+      const transport = await createTransport({
+        browser: "chrome_142",
+        proxy: proxyServer.proxyUrl,
+        proxyHeaders: { "X-Proxy-Token": "transport" },
+      });
+
+      try {
+        const transportResponse = await wreqFetch(httpUrl("/get"), {
+          transport,
+          timeout: 10_000,
+        });
+        assert.strictEqual(transportResponse.status, 200);
+      } finally {
+        await transport.close();
+      }
+
+      const session = await createSession({
+        browser: "chrome_142",
+        proxy: proxyServer.proxyUrl,
+        proxyHeaders: { "X-Proxy-Token": "session" },
+      });
+
+      try {
+        const sessionResponse = await session.fetch(httpUrl("/get"), { timeout: 10_000 });
+        assert.strictEqual(sessionResponse.status, 200);
+      } finally {
+        await session.close();
+      }
+
+      assert.ok(
+        proxyServer.proxiedRequests.some(
+          (request) => request.url.includes("/get") && request.proxyToken === "standalone",
+        ),
+        "Standalone fetch should send proxyHeaders to the proxy server",
+      );
+      assert.ok(
+        proxyServer.proxiedRequests.some(
+          (request) => request.url.includes("/get") && request.proxyToken === "transport",
+        ),
+        "Transport-backed fetch should send proxyHeaders to the proxy server",
+      );
+      assert.ok(
+        proxyServer.proxiedRequests.some((request) => request.url.includes("/get") && request.proxyToken === "session"),
+        "Session-backed fetch should send proxyHeaders to the proxy server",
+      );
+    } finally {
+      await proxyServer.close();
     }
   });
 
@@ -122,7 +212,7 @@ describe("Transport API", () => {
     );
   });
 
-  test("rejects transport with browser/os/emulation/proxy/insecure/trustStore overrides", async () => {
+  test("rejects transport with browser/os/emulation/proxy/proxyHeaders/insecure/trustStore overrides", async () => {
     const transport = await createTransport({ browser: "chrome_142" });
 
     try {
@@ -137,35 +227,54 @@ describe("Transport API", () => {
         wreqFetch(httpUrl("/get"), { transport, browser: "chrome_142" }),
         (error: unknown) =>
           error instanceof RequestError &&
-          /cannot be combined with browser\/os\/emulation\/proxy\/insecure\/trustStore/.test(error.message),
+          /cannot be combined with browser\/os\/emulation\/proxy\/proxyHeaders\/insecure\/trustStore/.test(
+            error.message,
+          ),
       );
 
       await assert.rejects(
         wreqFetch(httpUrl("/get"), { transport, os: "linux" }),
         (error: unknown) =>
           error instanceof RequestError &&
-          /cannot be combined with browser\/os\/emulation\/proxy\/insecure\/trustStore/.test(error.message),
+          /cannot be combined with browser\/os\/emulation\/proxy\/proxyHeaders\/insecure\/trustStore/.test(
+            error.message,
+          ),
       );
 
       await assert.rejects(
         wreqFetch(httpUrl("/get"), { transport, emulation: { headers: { "X-Test": "alpha" } } }),
         (error: unknown) =>
           error instanceof RequestError &&
-          /cannot be combined with browser\/os\/emulation\/proxy\/insecure\/trustStore/.test(error.message),
+          /cannot be combined with browser\/os\/emulation\/proxy\/proxyHeaders\/insecure\/trustStore/.test(
+            error.message,
+          ),
       );
 
       await assert.rejects(
         wreqFetch(httpUrl("/get"), { transport, proxy: "http://proxy.example.com:8080" }),
         (error: unknown) =>
           error instanceof RequestError &&
-          /cannot be combined with browser\/os\/emulation\/proxy\/insecure\/trustStore/.test(error.message),
+          /cannot be combined with browser\/os\/emulation\/proxy\/proxyHeaders\/insecure\/trustStore/.test(
+            error.message,
+          ),
+      );
+
+      await assert.rejects(
+        wreqFetch(httpUrl("/get"), { transport, proxyHeaders: { "X-Proxy-Token": "alpha" } }),
+        (error: unknown) =>
+          error instanceof RequestError &&
+          /cannot be combined with browser\/os\/emulation\/proxy\/proxyHeaders\/insecure\/trustStore/.test(
+            error.message,
+          ),
       );
 
       await assert.rejects(
         wreqFetch(httpUrl("/get"), { transport, insecure: true }),
         (error: unknown) =>
           error instanceof RequestError &&
-          /cannot be combined with browser\/os\/emulation\/proxy\/insecure\/trustStore/.test(error.message),
+          /cannot be combined with browser\/os\/emulation\/proxy\/proxyHeaders\/insecure\/trustStore/.test(
+            error.message,
+          ),
       );
     } finally {
       await transport.close();

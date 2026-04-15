@@ -1,9 +1,9 @@
 [package]
-name = "wreq-js"
-version = "2.2.2"
+name = "freq-js"
+version = "0.1.0"
 edition = "2024"
 license = "MIT"
-authors = ["Oleksandr Herasymov", "will-work-for-meal"]
+authors = ["ginwzy", "Oleksandr Herasymov", "will-work-for-meal"]
 
 [lib]
 crate-type = ["cdylib"]

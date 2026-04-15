@@ -316,6 +316,13 @@ export interface RequestInit {
   proxy?: string;
 
   /**
+   * Additional HTTP headers to send to the proxy server itself.
+   * These are not forwarded to the destination origin.
+   * Ignored when `transport` is provided.
+   */
+  proxyHeaders?: HeadersInit;
+
+  /**
    * Request timeout in milliseconds. If the request takes longer than this value,
    * it will be aborted.
    * @default 30000
@@ -421,6 +428,11 @@ export interface CreateSessionOptions {
    */
   proxy?: string;
   /**
+   * Additional HTTP headers to send to the proxy server used by this session.
+   * These are applied at the session transport layer and are not forwarded to the destination origin.
+   */
+  proxyHeaders?: HeadersInit;
+  /**
    * Default timeout applied when {@link Session.fetch} is called without
    * overriding `timeout`.
    */
@@ -456,6 +468,12 @@ export interface CreateTransportOptions {
    * Proxy URL to route requests through (e.g., 'http://proxy.example.com:8080').
    */
   proxy?: string;
+
+  /**
+   * Additional HTTP headers to send to the proxy server itself.
+   * These are applied to all requests made through this transport and are not forwarded to the destination origin.
+   */
+  proxyHeaders?: HeadersInit;
 
   /**
    * Browser profile to impersonate for this transport.
@@ -584,6 +602,12 @@ export interface RequestOptions {
    * Proxy support depends on the native layer and proxy scheme.
    */
   proxy?: string;
+
+  /**
+   * Additional HTTP headers to send to the proxy server itself.
+   * These are not forwarded to the destination origin.
+   */
+  proxyHeaders?: HeadersInit;
 
   /**
    * Redirect policy applied to this request. Matches the `redirect` option accepted by {@link fetch}.
@@ -754,6 +778,12 @@ export interface WebSocketOptions {
   proxy?: string;
 
   /**
+   * Additional HTTP headers to send to the proxy server during proxy negotiation.
+   * These are not forwarded to the destination WebSocket endpoint.
+   */
+  proxyHeaders?: HeadersInit;
+
+  /**
    * Optional subprotocols for compatibility with the WHATWG WebSocket constructor.
    * Values are validated for non-empty, unique entries and sent in
    * the `Sec-WebSocket-Protocol` handshake header.
@@ -800,7 +830,7 @@ export interface LegacyWebSocketOptions extends WebSocketOptions {
   onError?: (error: string) => void;
 }
 
-export type SessionWebSocketOptions = Omit<WebSocketOptions, "browser" | "os" | "proxy" | "emulation">;
+export type SessionWebSocketOptions = Omit<WebSocketOptions, "browser" | "os" | "proxy" | "proxyHeaders" | "emulation">;
 
 export interface LegacySessionWebSocketOptions extends SessionWebSocketOptions {
   /**

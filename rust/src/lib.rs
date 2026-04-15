@@ -222,6 +222,11 @@ fn js_object_to_request_options(
         .get_opt(cx, "proxy")?
         .and_then(|v: Handle<JsValue>| v.downcast::<JsString, _>(cx).ok())
         .map(|v| Arc::<str>::from(v.value(cx)));
+    let proxy_headers = if let Ok(Some(proxy_headers_value)) = obj.get_opt(cx, "proxyHeaders") {
+        parse_headers_from_value(cx, proxy_headers_value)?
+    } else {
+        Vec::new()
+    };
 
     // Get timeout (optional, defaults to 30000ms)
     let timeout = obj
@@ -322,6 +327,7 @@ fn js_object_to_request_options(
         method,
         body,
         proxy,
+        proxy_headers,
         timeout,
         redirect,
         session_id,
@@ -536,6 +542,7 @@ fn create_transport(mut cx: FunctionContext) -> JsResult<JsString> {
         os_opt,
         emulation_json_opt,
         proxy_opt,
+        proxy_headers,
         insecure_opt,
         trust_store_opt,
         pool_idle_timeout_opt,
@@ -546,7 +553,7 @@ fn create_transport(mut cx: FunctionContext) -> JsResult<JsString> {
     ) = if let Some(value) = options_value {
         if value.is_a::<JsUndefined, _>(&mut cx) || value.is_a::<JsNull, _>(&mut cx) {
             (
-                None, None, None, None, None, None, None, None, None, None, None,
+                None, None, None, None, Vec::new(), None, None, None, None, None, None, None,
             )
         } else {
             let obj = value.downcast_or_throw::<JsObject, _>(&mut cx)?;
@@ -566,6 +573,11 @@ fn create_transport(mut cx: FunctionContext) -> JsResult<JsString> {
                 .get_opt(&mut cx, "proxy")?
                 .and_then(|v: Handle<JsValue>| v.downcast::<JsString, _>(&mut cx).ok())
                 .map(|v| Arc::<str>::from(v.value(&mut cx)));
+            let proxy_headers = if let Ok(Some(proxy_headers_value)) = obj.get_opt(&mut cx, "proxyHeaders") {
+                parse_headers_from_value(&mut cx, proxy_headers_value)?
+            } else {
+                Vec::new()
+            };
             let insecure = obj
                 .get_opt(&mut cx, "insecure")?
                 .and_then(|v: Handle<JsValue>| v.downcast::<JsBoolean, _>(&mut cx).ok())
@@ -600,6 +612,7 @@ fn create_transport(mut cx: FunctionContext) -> JsResult<JsString> {
                 os,
                 emulation_json,
                 proxy,
+                proxy_headers,
                 insecure,
                 trust_store,
                 pool_idle_timeout,
@@ -611,7 +624,7 @@ fn create_transport(mut cx: FunctionContext) -> JsResult<JsString> {
         }
     } else {
         (
-            None, None, None, None, None, None, None, None, None, None, None,
+            None, None, None, None, Vec::new(), None, None, None, None, None, None, None,
         )
     };
 
@@ -628,6 +641,7 @@ fn create_transport(mut cx: FunctionContext) -> JsResult<JsString> {
         browser_os,
         emulation_json_opt,
         proxy_opt,
+        proxy_headers,
         insecure,
         trust_store,
         pool_idle_timeout_opt,
@@ -1019,6 +1033,11 @@ fn websocket_connect(mut cx: FunctionContext) -> JsResult<JsPromise> {
         .get_opt(&mut cx, "proxy")?
         .and_then(|v: Handle<JsValue>| v.downcast::<JsString, _>(&mut cx).ok())
         .map(|v| Arc::<str>::from(v.value(&mut cx)));
+    let proxy_headers = if let Ok(Some(proxy_headers_value)) = options_obj.get_opt(&mut cx, "proxyHeaders") {
+        parse_headers_from_value(&mut cx, proxy_headers_value)?
+    } else {
+        Vec::new()
+    };
 
     let (on_message, on_close, on_error) = extract_ws_callbacks(&mut cx, &options_obj)?;
 
@@ -1030,6 +1049,7 @@ fn websocket_connect(mut cx: FunctionContext) -> JsResult<JsPromise> {
         headers,
         protocols,
         proxy,
+        proxy_headers,
         max_frame_size,
         max_message_size,
     };

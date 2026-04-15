@@ -171,6 +171,27 @@ describe("HTTP sessions", () => {
     }
   });
 
+  test("rejects changing session proxyHeaders per request", async () => {
+    const session = await createSession({
+      browser: "chrome_142",
+      proxy: "http://proxy.example.com:8080",
+      proxyHeaders: { "X-Proxy-Token": "alpha" },
+    });
+
+    try {
+      await assert.rejects(
+        session.fetch(httpUrl("/get"), {
+          proxyHeaders: { "X-Proxy-Token": "beta" },
+          timeout: 5_000,
+        }),
+        (error: unknown) =>
+          error instanceof RequestError && /Session proxyHeaders cannot be changed/.test(error.message),
+      );
+    } finally {
+      await session.close();
+    }
+  });
+
   test("createSession({ emulation }) works without browser/os and reuses standalone custom emulation", async () => {
     const session = await createSession({
       emulation: {

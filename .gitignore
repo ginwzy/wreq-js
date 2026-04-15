@@ -38,5 +38,6 @@ tmp/
 
 # Agents
 .claude/
+.omx/
 AGENTS.md
 CPU.*.cpuprofile

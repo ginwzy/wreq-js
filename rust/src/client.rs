@@ -13,7 +13,7 @@ use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 use wreq::cookie::Jar;
-use wreq::header::OrigHeaderMap;
+use wreq::header::{HeaderMap, HeaderName, HeaderValue, OrigHeaderMap};
 use wreq::tls::CertStore;
 use wreq::{Client as HttpClient, Method, Proxy, redirect};
 
@@ -79,6 +79,7 @@ pub struct RequestOptions {
     pub method: String,
     pub body: Option<Vec<u8>>,
     pub proxy: Option<Arc<str>>,
+    pub proxy_headers: Vec<(String, String)>,
     pub timeout: u64,
     pub redirect: RedirectMode,
     pub session_id: String,
@@ -112,6 +113,7 @@ struct SessionConfig {
     browser_os: Option<BrowserEmulationOS>,
     emulation_json: Option<Arc<str>>,
     proxy: Option<Arc<str>>,
+    proxy_headers: Vec<(String, String)>,
     insecure: bool,
     trust_store: TrustStoreMode,
     connect_timeout: Option<Duration>,
@@ -126,6 +128,7 @@ impl SessionConfig {
             browser_os: options.browser_os,
             emulation_json: options.emulation_json.clone(),
             proxy: options.proxy.clone(),
+            proxy_headers: options.proxy_headers.clone(),
             insecure: options.insecure,
             trust_store: options.trust_store,
             connect_timeout: options.connect_timeout.map(Duration::from_millis),
@@ -140,6 +143,7 @@ struct TransportConfig {
     browser_os: Option<BrowserEmulationOS>,
     emulation_json: Option<Arc<str>>,
     proxy: Option<Arc<str>>,
+    proxy_headers: Vec<(String, String)>,
     insecure: bool,
     trust_store: TrustStoreMode,
     pool_idle_timeout: Option<Duration>,
@@ -157,6 +161,7 @@ impl TransportConfig {
             browser_os: options.browser_os,
             emulation_json: options.emulation_json.clone(),
             proxy: options.proxy.clone(),
+            proxy_headers: options.proxy_headers.clone(),
             insecure: options.insecure,
             trust_store: options.trust_store,
             pool_idle_timeout: options.pool_idle_timeout.map(Duration::from_millis),
@@ -173,6 +178,7 @@ impl TransportConfig {
         browser_os: Option<BrowserEmulationOS>,
         emulation_json: Option<Arc<str>>,
         proxy: Option<Arc<str>>,
+        proxy_headers: Vec<(String, String)>,
         insecure: bool,
         trust_store: TrustStoreMode,
         pool_idle_timeout: Option<u64>,
@@ -186,6 +192,7 @@ impl TransportConfig {
             browser_os,
             emulation_json,
             proxy,
+            proxy_headers,
             insecure,
             trust_store,
             pool_idle_timeout: pool_idle_timeout.map(Duration::from_millis),
@@ -265,6 +272,33 @@ fn build_cert_store(mode: TrustStoreMode) -> Result<CertStore> {
             }
         }
     }
+}
+
+pub(crate) fn build_proxy_header_map(headers: &[(String, String)]) -> Result<HeaderMap> {
+    let mut header_map = HeaderMap::with_capacity(headers.len());
+
+    for (name, value) in headers {
+        let header_name = HeaderName::from_bytes(name.as_bytes())
+            .with_context(|| format!("Invalid proxy header name: {name}"))?;
+        let header_value = HeaderValue::from_str(value)
+            .with_context(|| format!("Invalid proxy header value for {name}"))?;
+        header_map.append(header_name, header_value);
+    }
+
+    Ok(header_map)
+}
+
+pub(crate) fn build_proxy(
+    proxy_url: &str,
+    proxy_headers: &[(String, String)],
+) -> Result<Proxy> {
+    let proxy = Proxy::all(proxy_url).context("Failed to create proxy")?;
+
+    if proxy_headers.is_empty() {
+        return Ok(proxy);
+    }
+
+    Ok(proxy.custom_http_headers(build_proxy_header_map(proxy_headers)?))
 }
 
 pub fn store_body_stream(stream: ResponseBodyStream) -> u64 {
@@ -590,7 +624,7 @@ fn build_client(config: &TransportConfig) -> Result<ResolvedClient> {
     let mut client_builder = HttpClient::builder().emulation(emulation);
 
     if let Some(proxy_url) = config.proxy.as_deref() {
-        let proxy = Proxy::all(proxy_url).context("Failed to create proxy")?;
+        let proxy = build_proxy(proxy_url, &config.proxy_headers)?;
         client_builder = client_builder.proxy(proxy);
     }
 
@@ -643,7 +677,7 @@ fn build_ephemeral_client(config: &SessionConfig) -> Result<ResolvedClient> {
         .pool_max_idle_per_host(0);
 
     if let Some(proxy_url) = config.proxy.as_deref() {
-        let proxy = Proxy::all(proxy_url).context("Failed to create proxy")?;
+        let proxy = build_proxy(proxy_url, &config.proxy_headers)?;
         client_builder = client_builder.proxy(proxy);
     }
 
@@ -698,6 +732,7 @@ pub fn create_managed_transport(
     browser_os: Option<BrowserEmulationOS>,
     emulation_json: Option<Arc<str>>,
     proxy: Option<Arc<str>>,
+    proxy_headers: Vec<(String, String)>,
     insecure: bool,
     trust_store: TrustStoreMode,
     pool_idle_timeout: Option<u64>,
@@ -711,6 +746,7 @@ pub fn create_managed_transport(
         browser_os,
         emulation_json,
         proxy,
+        proxy_headers,
         insecure,
         trust_store,
         pool_idle_timeout,
@@ -759,6 +795,7 @@ mod tests {
             method: "GET".to_string(),
             body: None,
             proxy: None,
+            proxy_headers: Vec::new(),
             timeout: 5_000,
             redirect: RedirectMode::Follow,
             session_id: "test-session".to_string(),

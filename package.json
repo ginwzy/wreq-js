@@ -1,7 +1,7 @@
 {
-  "name": "wreq-js",
-  "version": "2.2.2",
-  "description": "Node.js/TypeScript HTTP client with browser TLS fingerprint impersonation (JA3/JA4). Bypass Cloudflare and anti-bot detection. Rust-powered, fetch()-compatible.",
+  "name": "freq-js",
+  "version": "0.1.0",
+  "description": "Fork of wreq-js. Node.js/TypeScript HTTP client with browser TLS fingerprint impersonation (JA3/JA4). Bypass Cloudflare and anti-bot detection. Rust-powered, fetch()-compatible.",
   "type": "module",
   "main": "./dist/wreq-js.cjs",
   "types": "./dist/wreq-js.d.ts",
@@ -66,19 +66,20 @@
     "wreq",
     "browser"
   ],
-  "author": "Oleksandr Herasymov <herasymov7@icloud.com>",
+  "author": "ginwzy",
   "contributors": [
+    "Oleksandr Herasymov <herasymov7@icloud.com>",
     "will-work-for-meal"
   ],
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/sqdshguy/wreq-js.git"
+    "url": "git+https://github.com/ginwzy/wreq-js.git"
   },
   "bugs": {
-    "url": "https://github.com/sqdshguy/wreq-js/issues"
+    "url": "https://github.com/ginwzy/wreq-js/issues"
   },
-  "homepage": "https://wreq.sqdsh.win",
+  "homepage": "https://github.com/ginwzy/wreq-js",
   "devDependencies": {
     "@biomejs/biome": "^2.4.11",
     "@napi-rs/cli": "^3.6.1",
@@ -109,7 +110,7 @@
     "rust/*.node"
   ],
   "napi": {
-    "binaryName": "wreq-js",
+    "binaryName": "freq-js",
     "targets": [
       "x86_64-apple-darwin",
       "aarch64-apple-darwin",

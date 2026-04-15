@@ -60,6 +60,7 @@ interface NativeWebSocketOptions {
   headers: HeaderTuple[];
   protocols?: string[];
   proxy?: string;
+  proxyHeaders?: HeaderTuple[];
   maxFrameSize?: number;
   maxMessageSize?: number;
   onMessage: (data: string | Buffer) => void;
@@ -89,6 +90,7 @@ interface NativeTransportOptions {
   os?: EmulationOS;
   emulationJson?: string;
   proxy?: string;
+  proxyHeaders?: HeaderTuple[];
   insecure?: boolean;
   trustStore?: TrustStoreMode;
   poolIdleTimeout?: number;
@@ -107,6 +109,7 @@ interface NativeRequestOptions {
   headers?: HeaderTuple[];
   body?: Buffer;
   proxy?: string;
+  proxyHeaders?: HeaderTuple[];
   timeout?: number;
   redirect?: "follow" | "manual" | "error";
   sessionId: string;
@@ -178,14 +181,14 @@ function loadNativeBinding() {
 
   if (platform === "darwin" && arch === "x64") {
     try {
-      return require("../rust/wreq-js.darwin-x64.node");
+      return require("../rust/freq-js.darwin-x64.node");
     } catch {
       try {
-        return require("../rust/wreq-js.node");
+        return require("../rust/freq-js.node");
       } catch {
         throw new Error(
           "Failed to load native module for darwin-x64. " +
-            "Tried: ../rust/wreq-js.darwin-x64.node and ../rust/wreq-js.node. " +
+            "Tried: ../rust/freq-js.darwin-x64.node and ../rust/freq-js.node. " +
             "Make sure the package is installed correctly and the native module is built for your platform.",
         );
       }
@@ -194,14 +197,14 @@ function loadNativeBinding() {
 
   if (platform === "darwin" && arch === "arm64") {
     try {
-      return require("../rust/wreq-js.darwin-arm64.node");
+      return require("../rust/freq-js.darwin-arm64.node");
     } catch {
       try {
-        return require("../rust/wreq-js.node");
+        return require("../rust/freq-js.node");
       } catch {
         throw new Error(
           "Failed to load native module for darwin-arm64. " +
-            "Tried: ../rust/wreq-js.darwin-arm64.node and ../rust/wreq-js.node. " +
+            "Tried: ../rust/freq-js.darwin-arm64.node and ../rust/freq-js.node. " +
             "Make sure the package is installed correctly and the native module is built for your platform.",
         );
       }
@@ -211,14 +214,14 @@ function loadNativeBinding() {
   if (platform === "linux" && arch === "x64") {
     if (libc === "musl") {
       try {
-        return require("../rust/wreq-js.linux-x64-musl.node");
+        return require("../rust/freq-js.linux-x64-musl.node");
       } catch {
         try {
-          return require("../rust/wreq-js.node");
+          return require("../rust/freq-js.node");
         } catch {
           throw new Error(
             "Failed to load native module for linux-x64-musl. " +
-              "Tried: ../rust/wreq-js.linux-x64-musl.node and ../rust/wreq-js.node. " +
+              "Tried: ../rust/freq-js.linux-x64-musl.node and ../rust/freq-js.node. " +
               "Make sure the package is installed correctly and the native module is built for your platform.",
           );
         }
@@ -226,14 +229,14 @@ function loadNativeBinding() {
     }
 
     try {
-      return require("../rust/wreq-js.linux-x64-gnu.node");
+      return require("../rust/freq-js.linux-x64-gnu.node");
     } catch {
       try {
-        return require("../rust/wreq-js.node");
+        return require("../rust/freq-js.node");
       } catch {
         throw new Error(
           "Failed to load native module for linux-x64-gnu. " +
-            "Tried: ../rust/wreq-js.linux-x64-gnu.node and ../rust/wreq-js.node. " +
+            "Tried: ../rust/freq-js.linux-x64-gnu.node and ../rust/freq-js.node. " +
             "Make sure the package is installed correctly and the native module is built for your platform.",
         );
       }
@@ -242,14 +245,14 @@ function loadNativeBinding() {
 
   if (platform === "linux" && arch === "arm64") {
     try {
-      return require("../rust/wreq-js.linux-arm64-gnu.node");
+      return require("../rust/freq-js.linux-arm64-gnu.node");
     } catch {
       try {
-        return require("../rust/wreq-js.node");
+        return require("../rust/freq-js.node");
       } catch {
         throw new Error(
           "Failed to load native module for linux-arm64-gnu. " +
-            "Tried: ../rust/wreq-js.linux-arm64-gnu.node and ../rust/wreq-js.node. " +
+            "Tried: ../rust/freq-js.linux-arm64-gnu.node and ../rust/freq-js.node. " +
             "Make sure the package is installed correctly and the native module is built for your platform.",
         );
       }
@@ -258,14 +261,14 @@ function loadNativeBinding() {
 
   if (platform === "win32" && arch === "x64") {
     try {
-      return require("../rust/wreq-js.win32-x64-msvc.node");
+      return require("../rust/freq-js.win32-x64-msvc.node");
     } catch {
       try {
-        return require("../rust/wreq-js.node");
+        return require("../rust/freq-js.node");
       } catch {
         throw new Error(
           "Failed to load native module for win32-x64-msvc. " +
-            "Tried: ../rust/wreq-js.win32-x64-msvc.node and ../rust/wreq-js.node. " +
+            "Tried: ../rust/freq-js.win32-x64-msvc.node and ../rust/freq-js.node. " +
             "Make sure the package is installed correctly and the native module is built for your platform.",
         );
       }
@@ -316,6 +319,7 @@ const UTF8_DECODER = new TextDecoder("utf-8");
 type SessionDefaults = {
   transportMode: ResolvedEmulationMode;
   proxy?: string;
+  proxyHeaders?: HeaderTuple[];
   timeout?: number;
   insecure?: boolean;
   trustStore?: TrustStoreMode;
@@ -335,6 +339,7 @@ type TransportResolution = {
   transportId?: string;
   mode?: ResolvedEmulationMode;
   proxy?: string;
+  proxyHeaders?: HeaderTuple[];
   insecure?: boolean;
   trustStore?: TrustStoreMode;
 };
@@ -402,6 +407,13 @@ function normalizeSessionOptions(options?: CreateSessionOptions): { sessionId: s
 
   if (options?.proxy !== undefined) {
     defaults.proxy = options.proxy;
+  }
+
+  if (options?.proxyHeaders !== undefined) {
+    const proxyHeaders = normalizeProxyHeaders(options.proxyHeaders);
+    if (proxyHeaders) {
+      defaults.proxyHeaders = proxyHeaders;
+    }
   }
 
   if (options?.timeout !== undefined) {
@@ -601,6 +613,43 @@ export class Headers implements Iterable<[string, string]> {
 
 function headersToTuples(init: HeadersInit): HeaderTuple[] {
   return new Headers(init).toTuples();
+}
+
+function normalizeProxyHeaders(init: HeadersInit | undefined): HeaderTuple[] | undefined {
+  if (init === undefined) {
+    return undefined;
+  }
+
+  const tuples = headersToTuples(init);
+  return tuples.length > 0 ? tuples : undefined;
+}
+
+function headerTuplesEqual(a: HeaderTuple[] | undefined, b: HeaderTuple[] | undefined): boolean {
+  if (a === b) {
+    return true;
+  }
+
+  if (!a || a.length === 0) {
+    return !b || b.length === 0;
+  }
+
+  if (!b || b.length === 0 || a.length !== b.length) {
+    return false;
+  }
+
+  const normalize = (tuples: HeaderTuple[]) =>
+    tuples.map(([name, value]) => `${name.toLowerCase()}\u0000${value}`).sort();
+
+  const left = normalize(a);
+  const right = normalize(b);
+
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 function hasHeaderName(tuples: HeaderTuple[] | undefined, name: string): boolean {
@@ -1126,6 +1175,9 @@ export class Session implements SessionHandle {
     if (this.defaults.defaultHeaders) {
       snapshot.defaultHeaders = [...this.defaults.defaultHeaders];
     }
+    if (this.defaults.proxyHeaders) {
+      snapshot.proxyHeaders = this.defaults.proxyHeaders.map(([name, value]): HeaderTuple => [name, value]);
+    }
     return snapshot;
   }
 
@@ -1317,16 +1369,18 @@ function resolveTransportContext(config: WreqRequestInit, sessionDefaults?: Sess
     }
 
     const hasProxy = config.proxy !== undefined;
+    const hasProxyHeaders = config.proxyHeaders !== undefined;
     if (
       config.browser !== undefined ||
       config.os !== undefined ||
       config.emulation !== undefined ||
       hasProxy ||
+      hasProxyHeaders ||
       config.insecure !== undefined ||
       config.trustStore !== undefined
     ) {
       throw new RequestError(
-        "`transport` cannot be combined with browser/os/emulation/proxy/insecure/trustStore options",
+        "`transport` cannot be combined with browser/os/emulation/proxy/proxyHeaders/insecure/trustStore options",
       );
     }
 
@@ -1361,6 +1415,18 @@ function resolveTransportContext(config: WreqRequestInit, sessionDefaults?: Sess
       throw new RequestError("Session proxy cannot be changed after creation");
     }
 
+    const initHasProxyHeaders = Object.hasOwn(config as object, "proxyHeaders");
+    const requestedProxyHeaders = initHasProxyHeaders
+      ? normalizeProxyHeaders((config as { proxyHeaders?: HeadersInit }).proxyHeaders)
+      : undefined;
+    if (
+      initHasProxyHeaders &&
+      requestedProxyHeaders !== undefined &&
+      !headerTuplesEqual(sessionDefaults.proxyHeaders, requestedProxyHeaders)
+    ) {
+      throw new RequestError("Session proxyHeaders cannot be changed after creation");
+    }
+
     if (config.insecure !== undefined) {
       const lockedInsecure = sessionDefaults.insecure ?? false;
       if (config.insecure !== lockedInsecure) {
@@ -1383,6 +1449,12 @@ function resolveTransportContext(config: WreqRequestInit, sessionDefaults?: Sess
   };
   if (config.proxy !== undefined) {
     resolved.proxy = config.proxy;
+  }
+  if (config.proxyHeaders !== undefined) {
+    const proxyHeaders = normalizeProxyHeaders(config.proxyHeaders);
+    if (proxyHeaders) {
+      resolved.proxyHeaders = proxyHeaders;
+    }
   }
   if (config.insecure !== undefined) {
     resolved.insecure = config.insecure;
@@ -2528,6 +2600,9 @@ export async function fetch(input: string | URL | Request, init?: WreqRequestIni
     if (transport.proxy !== undefined) {
       requestOptions.proxy = transport.proxy;
     }
+    if (transport.proxyHeaders !== undefined) {
+      requestOptions.proxyHeaders = transport.proxyHeaders;
+    }
     if (transport.insecure !== undefined) {
       requestOptions.insecure = transport.insecure;
     }
@@ -2575,8 +2650,10 @@ export async function createTransport(options?: CreateTransportOptions): Promise
   }
 
   try {
+    const proxyHeaders = normalizeProxyHeaders(options?.proxyHeaders);
     const transportOptions: NativeTransportOptions = {
       ...(options?.proxy !== undefined && { proxy: options.proxy }),
+      ...(proxyHeaders !== undefined && { proxyHeaders }),
       ...(options?.insecure !== undefined && { insecure: options.insecure }),
       trustStore: options?.trustStore ?? DEFAULT_TRUST_STORE,
       ...(options?.poolIdleTimeout !== undefined && { poolIdleTimeout: options.poolIdleTimeout }),
@@ -2604,6 +2681,7 @@ export async function createSession(options?: CreateSessionOptions): Promise<Ses
   try {
     const transportOptions: NativeTransportOptions = {
       ...(defaults.proxy !== undefined && { proxy: defaults.proxy }),
+      ...(defaults.proxyHeaders !== undefined && { proxyHeaders: defaults.proxyHeaders }),
       ...(defaults.insecure !== undefined && { insecure: defaults.insecure }),
       trustStore: defaults.trustStore ?? DEFAULT_TRUST_STORE,
     };
@@ -2685,6 +2763,10 @@ export async function request(options: RequestOptions): Promise<Response> {
     init.proxy = rest.proxy;
   }
 
+  if (rest.proxyHeaders !== undefined) {
+    init.proxyHeaders = rest.proxyHeaders;
+  }
+
   if (rest.timeout !== undefined) {
     init.timeout = rest.timeout;
   }
@@ -2737,7 +2819,7 @@ export async function request(options: RequestOptions): Promise<Response> {
  *
  * @example
  * ```typescript
- * import { getProfiles } from 'wreq-js';
+ * import { getProfiles } from 'freq-js';
  *
  * const profiles = getProfiles();
  * console.log(profiles); // ['chrome_131', 'chrome_142', 'firefox_135', 'safari_18', ...]
@@ -2897,6 +2979,9 @@ function normalizeStandaloneWebSocketOptions(options?: Partial<WebSocketOptions>
   if (options.proxy !== undefined) {
     normalized.proxy = options.proxy;
   }
+  if (options.proxyHeaders !== undefined) {
+    normalized.proxyHeaders = options.proxyHeaders;
+  }
   if (options.protocols !== undefined) {
     normalized.protocols = options.protocols;
   }
@@ -2944,6 +3029,11 @@ function normalizeSessionWebSocketOptions(options?: Partial<SessionWebSocketOpti
   }
   if (optionsWithOverrides.proxy !== undefined) {
     throw new RequestError("`proxy` is not supported in session.websocket(); the session transport controls proxying.");
+  }
+  if (optionsWithOverrides.proxyHeaders !== undefined) {
+    throw new RequestError(
+      "`proxyHeaders` is not supported in session.websocket(); the session transport controls proxying.",
+    );
   }
 
   if (options.headers !== undefined) {
@@ -3195,6 +3285,7 @@ export class WebSocket {
         ? protocolsOrOptions
         : normalizedOptions.protocols,
     );
+    const proxyHeaders = normalizeProxyHeaders(normalizedOptions.proxyHeaders);
 
     return {
       _internal: true,
@@ -3207,6 +3298,7 @@ export class WebSocket {
           headers: headersToTuples(normalizedOptions.headers ?? {}),
           ...(protocols && protocols.length > 0 && { protocols }),
           ...(normalizedOptions.proxy !== undefined && { proxy: normalizedOptions.proxy }),
+          ...(proxyHeaders !== undefined && { proxyHeaders }),
           ...(normalizedOptions.maxFrameSize !== undefined && { maxFrameSize: normalizedOptions.maxFrameSize }),
           ...(normalizedOptions.maxMessageSize !== undefined && { maxMessageSize: normalizedOptions.maxMessageSize }),
           onMessage: callbacks.onMessage,
@@ -3732,6 +3824,7 @@ export async function websocket(
     normalized.options.emulation,
   );
   const protocols = normalizeWebSocketProtocolList(normalized.options.protocols);
+  const proxyHeaders = normalizeProxyHeaders(normalized.options.proxyHeaders);
 
   return WebSocket._connectWithInit({
     _internal: true,
@@ -3744,6 +3837,7 @@ export async function websocket(
         headers: headersToTuples(normalized.options.headers ?? {}),
         ...(protocols && protocols.length > 0 && { protocols }),
         ...(normalized.options.proxy !== undefined && { proxy: normalized.options.proxy }),
+        ...(proxyHeaders !== undefined && { proxyHeaders }),
         ...(normalized.options.maxFrameSize !== undefined && { maxFrameSize: normalized.options.maxFrameSize }),
         ...(normalized.options.maxMessageSize !== undefined && { maxMessageSize: normalized.options.maxMessageSize }),
         onMessage: callbacks.onMessage,
