@@ -1,6 +1,6 @@
 {
   "name": "@zionsssx/freq-js",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Fork of wreq-js. Node.js/TypeScript HTTP client with browser TLS fingerprint impersonation (JA3/JA4). Bypass Cloudflare and anti-bot detection. Rust-powered, fetch()-compatible.",
   "type": "module",
   "main": "./dist/wreq-js.cjs",
