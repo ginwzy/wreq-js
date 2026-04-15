@@ -167,6 +167,10 @@ jobs:
           CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_DEBUG: "false"
         run: ${{ matrix.settings.build }}
 
+      - name: Clean rust target for Docker build (avoid stale host artifacts)
+        if: matrix.settings.docker
+        run: rm -rf rust/target
+
       - name: Build native module (Linux gnu in Docker for glibc 2.31 compat)
         if: matrix.settings.docker
         run: |
@@ -180,9 +184,9 @@ jobs:
               set -eux
               GOARCH=\$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
               apt-get update -qq
-              apt-get install -y -qq cmake perl libclang-dev clang llvm-dev
-              export LIBCLANG_PATH=\$(llvm-config-11 --libdir 2>/dev/null || find /usr/lib/llvm-*/lib -name 'libclang.so*' | head -1 | xargs dirname 2>/dev/null || echo /usr/lib/llvm-11/lib)
-              echo "LIBCLANG_PATH=\$LIBCLANG_PATH"
+              apt-get install -y -qq cmake perl llvm-11 libclang-11-dev
+              export LIBCLANG_PATH=/usr/lib/llvm-11/lib
+              ls \$LIBCLANG_PATH/libclang*.so* || echo 'WARNING: libclang.so not found at LIBCLANG_PATH'
               curl -sSfL \"https://go.dev/dl/go1.21.13.linux-\${GOARCH}.tar.gz\" | tar -C /usr/local -xz
               export PATH=\$PATH:/usr/local/go/bin
               curl https://sh.rustup.rs -sSf | sh -s -- -y --default-toolchain stable --target ${{ matrix.settings.target }} --profile minimal
