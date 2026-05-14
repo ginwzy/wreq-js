@@ -55,7 +55,7 @@ bun add wreq-js
 
 Current configured native target matrix in `package.json` includes:
 1. macOS (Intel and Apple Silicon)
-2. Linux (x64 glibc and musl, arm64 glibc)
+2. Linux (x64 glibc and musl, arm64 glibc and musl)
 3. Windows (x64)
 
 If a matching prebuilt artifact is unavailable for your environment, installation may build from source (requires a Rust toolchain).
