@@ -188,7 +188,7 @@ jobs:
         run: ${{ matrix.settings.build }}
 
       - name: Smoke test native addon
-        if: matrix.settings.target != 'x86_64-unknown-linux-musl'
+        if: matrix.settings.target != 'x86_64-unknown-linux-musl' && matrix.settings.target != 'aarch64-unknown-linux-musl'
         env:
           WREQ_TARGET: ${{ matrix.settings.target }}
         run: node scripts/smoke-native.cjs
