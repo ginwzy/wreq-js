@@ -165,7 +165,7 @@ jobs:
               set -eux
               apk add --no-cache rust cargo build-base python3
               npm ci --ignore-scripts
-              npm run build:rust -- --target aarch64-unknown-linux-musl
+              npm run build:rust
             '
 
       - name: Build native module (Windows)
