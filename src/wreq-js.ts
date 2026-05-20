@@ -245,6 +245,22 @@ function loadNativeBinding() {
   }
 
   if (platform === "linux" && arch === "arm64") {
+    if (libc === "musl") {
+      try {
+        return require("../rust/wreq-js.linux-arm64-musl.node");
+      } catch {
+        try {
+          return require("../rust/wreq-js.node");
+        } catch {
+          throw new Error(
+            "Failed to load native module for linux-arm64-musl. " +
+              "Tried: ../rust/wreq-js.linux-arm64-musl.node and ../rust/wreq-js.node. " +
+              "Make sure the package is installed correctly and the native module is built for your platform.",
+          );
+        }
+      }
+    }
+
     try {
       return require("../rust/wreq-js.linux-arm64-gnu.node");
     } catch {
@@ -279,7 +295,7 @@ function loadNativeBinding() {
   throw new Error(
     `Unsupported platform: ${platform}-${arch}${libc ? `-${libc}` : ""}. ` +
       `Supported platforms: darwin-x64, darwin-arm64, linux-x64-gnu, linux-x64-musl, ` +
-      `linux-arm64-gnu, win32-x64-msvc`,
+      `linux-arm64-gnu, linux-arm64-musl, win32-x64-msvc`,
   );
 }
 
