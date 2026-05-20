@@ -163,7 +163,7 @@ jobs:
             node:20-alpine \
             sh -lc '
               set -eux
-              apk add --no-cache rust cargo build-base python3
+              apk add --no-cache rust cargo build-base python3 cmake
               npm ci --ignore-scripts
               npm run build:rust
             '
