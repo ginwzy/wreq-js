@@ -2,11 +2,13 @@ import { randomUUID } from "node:crypto";
 import { STATUS_CODES } from "node:http";
 import { Readable } from "node:stream";
 import { ReadableStream } from "node:stream/web";
+import { BROWSER_ALIASES } from "./generated-types.js";
 import { nativeRequire as require } from "./native-require.js";
 import type {
   AlpnProtocol,
   AlpsProtocol,
   BodyInit,
+  BrowserAlias,
   BrowserProfile,
   CookieMode,
   CreateSessionOptions,
@@ -329,7 +331,8 @@ const bodyHandleFinalizer =
       })
     : undefined;
 
-const DEFAULT_BROWSER: BrowserProfile = "chrome_142";
+// Tracks the newest Chrome rather than pinning a version that silently goes stale.
+const DEFAULT_BROWSER: BrowserProfile = BROWSER_ALIASES.chrome;
 const DEFAULT_OS: EmulationOS = "macos";
 const DEFAULT_REQUEST_TIMEOUT_MS = 300_000;
 const DEFAULT_TRUST_STORE: TrustStoreMode = "combined";
@@ -1405,10 +1408,12 @@ function resolveTransportContext(config: WreqRequestInit, sessionDefaults?: Sess
     }
 
     if (config.browser !== undefined) {
-      validateBrowserProfile(config.browser);
+      // Compare resolved profiles, so `browser: 'chrome'` matches a session created
+      // with the concrete profile that alias points at.
+      const requestedBrowser = resolveProfile(config.browser);
       const lockedBrowser =
         sessionDefaults.transportMode.kind === "custom" ? undefined : sessionDefaults.transportMode.browser;
-      if (config.browser !== lockedBrowser) {
+      if (requestedBrowser !== lockedBrowser) {
         throw new RequestError("Session browser cannot be changed after creation");
       }
     }
@@ -1727,7 +1732,7 @@ function ensureBodyAllowed(method: string, body?: Buffer): void {
   }
 }
 
-function validateBrowserProfile(browser?: BrowserProfile | string): void {
+function validateBrowserProfile(browser?: BrowserProfile | BrowserAlias | string): void {
   if (browser === undefined) {
     return;
   }
@@ -1736,8 +1741,11 @@ function validateBrowserProfile(browser?: BrowserProfile | string): void {
     throw new RequestError("Browser profile must not be empty");
   }
 
-  if (!getProfileSet().has(browser)) {
-    throw new RequestError(`Invalid browser profile: ${browser}. Available profiles: ${getProfiles().join(", ")}`);
+  // Object.hasOwn, not `in`, so inherited keys like "toString" are not treated as aliases.
+  if (!getProfileSet().has(browser) && !Object.hasOwn(BROWSER_ALIASES, browser)) {
+    throw new RequestError(
+      `Invalid browser profile: ${browser}. Available aliases: ${Object.keys(BROWSER_ALIASES).join(", ")}. Available profiles: ${getProfiles().join(", ")}`,
+    );
   }
 }
 
@@ -2416,12 +2424,14 @@ function serializeCustomEmulationOptions(
 }
 
 function resolveEmulationMode(
-  browser: BrowserProfile | undefined,
+  browser: BrowserProfile | BrowserAlias | undefined,
   os: EmulationOS | undefined,
   emulation: CustomEmulationOptions | undefined,
 ): ResolvedEmulationMode {
   if (browser !== undefined) {
-    validateBrowserProfile(browser);
+    // Resolve here so aliases never reach the native layer, where an unrecognized
+    // profile silently falls back to Chrome instead of failing.
+    const resolvedBrowser = resolveProfile(browser);
     if (os !== undefined) {
       validateOperatingSystem(os);
     }
@@ -2429,7 +2439,7 @@ function resolveEmulationMode(
     const emulationJson = serializeCustomEmulationOptions(emulation, true);
     return {
       kind: "preset",
-      browser,
+      browser: resolvedBrowser,
       os: os ?? DEFAULT_OS,
       ...(emulationJson !== undefined && { emulationJson }),
     };
@@ -2901,13 +2911,42 @@ function getOperatingSystemSet(): Set<string> {
 }
 
 /**
+ * Resolve a browser family alias to the concrete profile it points at.
+ *
+ * Concrete profiles pass through unchanged, so this is safe to call on any value
+ * accepted by the `browser` option.
+ *
+ * Aliases track the newest profile shipped with the installed version of this library,
+ * so the result moves when you upgrade. Log it if you need to know which fingerprint a
+ * given run used.
+ *
+ * @param browser - A browser profile or family alias
+ * @returns The concrete browser profile
+ *
+ * @example
+ * ```typescript
+ * import { resolveProfile } from 'wreq-js';
+ *
+ * resolveProfile('firefox');     // 'firefox_149'
+ * resolveProfile('firefox_143'); // 'firefox_143'
+ * ```
+ */
+export function resolveProfile(browser: BrowserProfile | BrowserAlias): BrowserProfile {
+  validateBrowserProfile(browser);
+
+  return Object.hasOwn(BROWSER_ALIASES, browser)
+    ? BROWSER_ALIASES[browser as BrowserAlias]
+    : (browser as BrowserProfile);
+}
+
+/**
  * Get the headers a browser profile injects into every request, without sending one.
  *
  * Returns the emulation's own headers in profile order and original casing. Pass any of
  * these back through `headers` to override them for a request; the rest of the profile
  * stays intact.
  *
- * @param browser - Browser profile to inspect (defaults to the same profile as {@link fetch})
+ * @param browser - Browser profile or family alias to inspect (defaults to the same profile as {@link fetch})
  * @param os - Operating system to emulate (defaults to the same OS as {@link fetch})
  * @returns A {@link Headers} instance holding the profile's default headers
  *
@@ -2925,11 +2964,10 @@ function getOperatingSystemSet(): Set<string> {
  * });
  * ```
  */
-export function getEmulationHeaders(browser?: BrowserProfile, os?: EmulationOS): Headers {
-  validateBrowserProfile(browser);
+export function getEmulationHeaders(browser?: BrowserProfile | BrowserAlias, os?: EmulationOS): Headers {
   validateOperatingSystem(os);
 
-  const resolvedBrowser = browser ?? DEFAULT_BROWSER;
+  const resolvedBrowser = browser === undefined ? DEFAULT_BROWSER : resolveProfile(browser);
   const resolvedOs = os ?? DEFAULT_OS;
   const cacheKey = `${resolvedBrowser} ${resolvedOs}`;
 
@@ -3933,6 +3971,7 @@ export type {
   AlpnProtocol,
   AlpsProtocol,
   BodyInit,
+  BrowserAlias,
   BrowserProfile,
   CookieMode,
   CreateSessionOptions,

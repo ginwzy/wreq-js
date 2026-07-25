@@ -86,6 +86,36 @@ const mobileResponse = await fetch('https://example.com', {
 
 ---
 
+## resolveProfile()
+
+Resolve a browser family alias to the concrete profile it points at.
+
+### Signature
+
+```typescript
+function resolveProfile(browser: BrowserProfile | BrowserAlias): BrowserProfile
+```
+
+### Returns
+
+The concrete profile. Concrete profiles pass through unchanged, so this is safe to call on
+any value accepted by the `browser` option.
+
+### Example
+
+```typescript
+import { resolveProfile } from 'wreq-js';
+
+resolveProfile('firefox');     // 'firefox_149'
+resolveProfile('firefox_143'); // 'firefox_143'
+```
+
+An alias resolves against the profile set shipped with your installed version of wreq-js,
+so the result moves when you upgrade. Log it when you need to know which fingerprint a
+given run actually used.
+
+---
+
 ## getEmulationHeaders()
 
 Get the headers a browser profile injects into every request, without sending one.

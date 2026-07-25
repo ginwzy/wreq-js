@@ -25,8 +25,9 @@ function createTransport(options?: CreateTransportOptions): Promise<Transport>
   Proxy URL for all requests made through this transport. Support depends on the native layer and proxy scheme.
 </ParamField>
 
-<ParamField path="browser" type="BrowserProfile" default="chrome_142">
-  Browser fingerprint profile to use for this transport.
+<ParamField path="browser" type="BrowserProfile | BrowserAlias" default="chrome">
+  Browser fingerprint profile to use for this transport, or a family alias such as
+  `'firefox'` that resolves to the newest profile in that family.
 </ParamField>
 
 <ParamField path="os" type="EmulationOS" default="macos">

@@ -37,8 +37,10 @@ function fetch(input: string | URL | Request, init?: RequestInit): Promise<Respo
   Reusable transport context for this request (proxy + emulation settings, with connection behavior handled by the native layer). When provided, you must not also set `browser`, `os`, `proxy`, or `insecure`.
 </ParamField>
 
-<ParamField path="browser" type="BrowserProfile">
-  Browser fingerprint profile to use (e.g., `'chrome_142'`, `'firefox_139'`).
+<ParamField path="browser" type="BrowserProfile | BrowserAlias" default="chrome">
+  Browser fingerprint profile to use (e.g., `'chrome_142'`, `'firefox_139'`), or a family
+  alias such as `'firefox'` that resolves to the newest profile in that family. See
+  [browser profiles](/concepts/browser-profiles#family-aliases).
 </ParamField>
 
 <ParamField path="os" type="EmulationOS">

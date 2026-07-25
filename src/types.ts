@@ -1,8 +1,8 @@
 // Import and re-export the auto-generated BrowserProfile and EmulationOS types
-import type { BrowserProfile, EmulationOS } from "./generated-types.js";
+import type { BrowserAlias, BrowserProfile, EmulationOS } from "./generated-types.js";
 import type { Session, Transport, WebSocket } from "./wreq-js.js";
 
-export type { BrowserProfile, EmulationOS };
+export type { BrowserAlias, BrowserProfile, EmulationOS };
 
 /**
  * Controls how cookies are scoped for a request.
@@ -349,9 +349,12 @@ export interface RequestInit {
    * Browser profile to impersonate for this request.
    * Applies browser profile behavior handled by the native layer.
    * Ignored when `transport` is provided.
-   * @default 'chrome_142'
+   *
+   * Accepts a concrete profile ('firefox_149') or a family alias ('firefox'),
+   * which resolves to the newest profile in that family.
+   * @default 'chrome'
    */
-  browser?: BrowserProfile;
+  browser?: BrowserProfile | BrowserAlias;
 
   /**
    * Operating system to emulate for this request.
@@ -474,9 +477,12 @@ export interface CreateSessionOptions {
   defaultHeaders?: HeadersInit;
 
   /**
-   * Browser profile to bind to this session. Defaults to 'chrome_142'.
+   * Browser profile to bind to this session. Defaults to 'chrome'.
+   *
+   * Accepts a concrete profile ('firefox_149') or a family alias ('firefox'),
+   * which resolves to the newest profile in that family.
    */
-  browser?: BrowserProfile;
+  browser?: BrowserProfile | BrowserAlias;
 
   /**
    * Operating system to bind to this session. Defaults to 'macos'.
@@ -535,8 +541,11 @@ export interface CreateTransportOptions {
 
   /**
    * Browser profile to impersonate for this transport.
+   *
+   * Accepts a concrete profile ('firefox_149') or a family alias ('firefox'),
+   * which resolves to the newest profile in that family.
    */
-  browser?: BrowserProfile;
+  browser?: BrowserProfile | BrowserAlias;
 
   /**
    * Operating system to emulate for this transport.
@@ -625,9 +634,12 @@ export interface RequestOptions {
   /**
    * Browser profile to impersonate.
    * Applies browser profile behavior handled by the native layer.
-   * @default 'chrome_142'
+   *
+   * Accepts a concrete profile ('firefox_149') or a family alias ('firefox'),
+   * which resolves to the newest profile in that family.
+   * @default 'chrome'
    */
-  browser?: BrowserProfile;
+  browser?: BrowserProfile | BrowserAlias;
 
   /**
    * Operating system to emulate.
@@ -826,9 +838,12 @@ export interface WebSocketOptions {
   /**
    * Browser profile to impersonate for the WebSocket upgrade request.
    * Automatically applies browser-specific headers and TLS fingerprints.
-   * @default 'chrome_142'
+   *
+   * Accepts a concrete profile ('firefox_149') or a family alias ('firefox'),
+   * which resolves to the newest profile in that family.
+   * @default 'chrome'
    */
-  browser?: BrowserProfile;
+  browser?: BrowserProfile | BrowserAlias;
 
   /**
    * Operating system to emulate for the WebSocket handshake.
