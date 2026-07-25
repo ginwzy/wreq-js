@@ -1,5 +1,5 @@
 import assert from "node:assert";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { describe, test } from "node:test";
@@ -44,6 +44,13 @@ export const _asyncIterableBody = async () => {
 `;
 
 function typeCheck(lib: string[]): string[] {
+  // Without this the missing bundle surfaces as an unresolved-import diagnostic, which
+  // reads like a conformance failure rather than "you forgot to build".
+  assert.ok(
+    existsSync(DIST_TYPES),
+    `${DIST_TYPES} not found. Run \`npm run build:ts\` before the suite; this test checks the published types.`,
+  );
+
   const dir = mkdtempSync(join(tmpdir(), "wreq-conformance-"));
 
   try {

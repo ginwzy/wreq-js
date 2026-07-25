@@ -117,6 +117,11 @@ jobs:
           echo "Collected binaries:"
           ls -la rust/*.node
 
+      - name: Build TypeScript bundle
+        # The type-conformance test compiles dist/wreq-js.d.ts, so the bundle has to
+        # exist before the suite runs. The native addon is downloaded separately above.
+        run: npm run build:ts
+
       - name: Run tests
         run: npm exec -- tsx src/test/run-with-local-server.ts
 
