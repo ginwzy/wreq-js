@@ -989,6 +989,12 @@ export class Response {
     return view.buffer;
   }
 
+  // Built on arrayBuffer() so it inherits the same zero-copy path and aliasing
+  // semantics rather than introducing a second set.
+  async bytes(): Promise<Uint8Array> {
+    return new Uint8Array(await this.arrayBuffer());
+  }
+
   async text(): Promise<string> {
     const bytes = await this.consumeBody();
     return UTF8_DECODER.decode(bytes);
@@ -1695,8 +1701,46 @@ async function serializeBody(body?: BodyInit | null): Promise<SerializedBody> {
     return { body: buffer, ...(contentType ? { contentType } : {}) };
   }
 
+  // Kept below the concrete branches on purpose: URLSearchParams and FormData are both
+  // iterable, and matching them here would lose their Content-Type.
+  //
+  // The native layer takes a single Buffer, so stream bodies are buffered rather than
+  // streamed. Duck-typed rather than `instanceof ReadableStream` because the class
+  // imported here is node:stream/web's, which would miss streams from another realm.
+  if (typeof (body as ReadableStream<Uint8Array>).getReader === "function") {
+    const reader = (body as ReadableStream<Uint8Array>).getReader();
+    const chunks: Uint8Array[] = [];
+
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      chunks.push(value);
+    }
+
+    return { body: Buffer.concat(chunks) };
+  }
+
+  if (
+    typeof (body as AsyncIterable<Uint8Array>)[Symbol.asyncIterator] === "function" ||
+    typeof (body as Iterable<Uint8Array>)[Symbol.iterator] === "function"
+  ) {
+    const chunks: Uint8Array[] = [];
+
+    // `for await` iterates sync iterables too, so one branch covers both.
+    for await (const chunk of body as AsyncIterable<Uint8Array>) {
+      if (!ArrayBuffer.isView(chunk)) {
+        throw new TypeError("Iterable request bodies must yield Uint8Array chunks");
+      }
+      chunks.push(chunk);
+    }
+
+    return { body: Buffer.concat(chunks) };
+  }
+
   throw new TypeError(
-    "Unsupported body type; expected string, Buffer, ArrayBuffer, ArrayBufferView, URLSearchParams, Blob, or FormData",
+    "Unsupported body type; expected string, Buffer, ArrayBuffer, ArrayBufferView, URLSearchParams, Blob, FormData, ReadableStream, or an iterable of Uint8Array",
   );
 }
 

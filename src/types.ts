@@ -201,9 +201,22 @@ export interface CustomEmulationOptions {
  *
  * // FormData
  * const body: BodyInit = new FormData();
+ *
+ * // ReadableStream (buffered before sending, not streamed)
+ * const body: BodyInit = stream;
  * ```
  */
-export type BodyInit = string | ArrayBuffer | ArrayBufferView | URLSearchParams | Buffer | Blob | FormData;
+export type BodyInit =
+  | string
+  | ArrayBuffer
+  | ArrayBufferView
+  | URLSearchParams
+  | Buffer
+  | Blob
+  | FormData
+  | ReadableStream<Uint8Array>
+  | AsyncIterable<Uint8Array>
+  | Iterable<Uint8Array>;
 
 /**
  * Details about why a WebSocket connection closed.
@@ -317,8 +330,18 @@ export interface RequestInit {
 
   /**
    * A BodyInit object or null to set request's body.
+   *
+   * Stream and iterable bodies are read fully into memory before the request is sent,
+   * so an unbounded stream means an unbounded allocation.
    */
   body?: BodyInit | null;
+
+  /**
+   * Accepted for compatibility with the Fetch API, where it is required alongside a
+   * stream body. Stream bodies are buffered here, which satisfies half-duplex on its
+   * own, so this option has no effect.
+   */
+  duplex?: "half";
 
   /**
    * An AbortSignal to set request's signal.

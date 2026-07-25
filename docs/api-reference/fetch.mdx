@@ -30,7 +30,9 @@ function fetch(input: string | URL | Request, init?: RequestInit): Promise<Respo
 </ParamField>
 
 <ParamField path="body" type="BodyInit | null">
-  Request body. Supported types: `string`, `Buffer`, `URLSearchParams`, `ArrayBuffer`, `ArrayBufferView` (for example `Uint8Array`), `Blob`, and `FormData`.
+  Request body. Supported types: `string`, `Buffer`, `URLSearchParams`, `ArrayBuffer`, `ArrayBufferView` (for example `Uint8Array`), `Blob`, `FormData`, `ReadableStream<Uint8Array>`, and any sync or async iterable of `Uint8Array`.
+
+  Stream and iterable bodies are read fully into memory before the request is sent, so an unbounded stream means an unbounded allocation.
 </ParamField>
 
 <ParamField path="transport" type="Transport">
@@ -100,6 +102,7 @@ Returns a `Response` object with:
 - `json()`: parse body as JSON
 - `text()`: get body as string
 - `arrayBuffer()`: get body as ArrayBuffer
+- `bytes()`: get body as Uint8Array
 - `blob()`: get body as Blob
 - `formData()`: parse body as FormData
 - `clone()`: clone the response
