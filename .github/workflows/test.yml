@@ -67,7 +67,7 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Patch boring-sys2 on Windows
+      - name: Patch btls-sys on Windows
         if: runner.os == 'Windows'
         shell: bash
         run: |
@@ -75,19 +75,39 @@ jobs:
           
           cargo fetch
 
-          FILE=$(find ~/.cargo/registry/src -name "main.rs" | grep "boring-sys2" | grep "build")
+          # wreq 6.0.0-rc.29 swapped the TLS backend from boring2 to btls, so the
+          # BoringSSL build script this patches now ships in btls-sys.
+          FILE=$(find ~/.cargo/registry/src -name "main.rs" | grep "btls-sys" | grep "build")
           
           if [ -z "$FILE" ]; then
-            echo "Error: Could not find boring-sys2 build/main.rs to patch"
+            echo "Error: Could not find btls-sys build/main.rs to patch"
             exit 1
           fi
           
           echo "Patching $FILE"
 
-          sed -i 's/let bssl_dir = built_boring_source_path(config);/let bssl_dir = built_boring_source_path(config); if config.target.ends_with("-msvc") { println!("cargo:rustc-link-search=native={}\/lib", bssl_dir.display()); }/' "$FILE"
+          # sed exits 0 when a pattern matches nothing, so an upstream rename would
+          # silently produce an unpatched build. Verify each edit landed instead.
+          patch_and_verify() {
+            sed -i "$1" "$FILE"
 
-          sed -i 's/cfg.build_target("ssl").build();/\/\/ cfg.build_target("ssl").build();/' "$FILE"
-          sed -i 's/cfg.build_target("crypto").build()/cfg.build_target("ALL_BUILD").build()/' "$FILE"
+            if ! grep -q -F -- "$2" "$FILE"; then
+              echo "Error: patch did not apply, upstream build script likely changed: $2"
+              exit 1
+            fi
+          }
+
+          patch_and_verify \
+            's/let bssl_dir = build_boringssl_or_get_prebuilt(config);/let bssl_dir = build_boringssl_or_get_prebuilt(config); if config.target.ends_with("-msvc") { println!("cargo:rustc-link-search=native={}\/lib", bssl_dir.display()); }/' \
+            'build_boringssl_or_get_prebuilt(config); if config.target.ends_with("-msvc")'
+
+          patch_and_verify \
+            's/cfg.build_target("ssl").build();/\/\/ cfg.build_target("ssl").build();/' \
+            '// cfg.build_target'
+
+          patch_and_verify \
+            's/cfg.build_target("crypto").build()/cfg.build_target("ALL_BUILD").build()/' \
+            'cfg.build_target("ALL_BUILD").build()'
 
       - name: Build native module
         run: npm run build:rust
