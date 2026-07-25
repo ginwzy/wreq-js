@@ -14,6 +14,35 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  build_types:
+    name: "Build TypeScript bundle"
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          # tsdown requires ^22.18.0 || >=24.11.0, so the bundle is built once here
+          # rather than inside the test matrix, which still covers Node 20.
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Build TypeScript bundle
+        run: npm run build:ts
+
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: dist-bundle
+          path: dist
+          if-no-files-found: error
+
   build_native:
     strategy:
       fail-fast: false
@@ -68,7 +97,7 @@ jobs:
           if-no-files-found: error
 
   test_pr:
-    needs: build_native
+    needs: [build_native, build_types]
     strategy:
       fail-fast: false
       matrix:
@@ -117,10 +146,13 @@ jobs:
           echo "Collected binaries:"
           ls -la rust/*.node
 
-      - name: Build TypeScript bundle
-        # The type-conformance test compiles dist/wreq-js.d.ts, so the bundle has to
-        # exist before the suite runs. The native addon is downloaded separately above.
-        run: npm run build:ts
+      - name: Download TypeScript bundle
+        # The type-conformance test compiles dist/wreq-js.d.ts, so the published
+        # bundle has to be present before the suite runs.
+        uses: actions/download-artifact@v8
+        with:
+          name: dist-bundle
+          path: dist
 
       - name: Run tests
         run: npm exec -- tsx src/test/run-with-local-server.ts
