@@ -29,20 +29,20 @@ use websocket::{
     connect_websocket_with_session, get_connection, remove_connection, store_connection,
 };
 use wreq::ws::message::Message;
-use wreq_util::{Emulation, EmulationOS};
+use wreq_util::{Platform, Profile};
 
 const WS_EVENT_BUFFER: usize = 64;
 static REQUEST_CANCELLATIONS: LazyLock<DashMap<u64, CancellationToken>> =
     LazyLock::new(DashMap::new);
 
-// Parse browser string to Emulation enum using serde
-fn parse_emulation(browser: &str) -> Emulation {
-    static EMULATION_CACHE: LazyLock<HashMap<&'static str, Emulation>> = LazyLock::new(|| {
+// Parse browser string to Profile enum using serde
+fn parse_emulation(browser: &str) -> Profile {
+    static EMULATION_CACHE: LazyLock<HashMap<&'static str, Profile>> = LazyLock::new(|| {
         generated_profiles::BROWSER_PROFILES
             .iter()
             .filter_map(|label| {
                 // Populate cache once up-front; failures fall back to the default below.
-                serde_json::from_value::<Emulation>(serde_json::Value::String((*label).to_string()))
+                serde_json::from_value::<Profile>(serde_json::Value::String((*label).to_string()))
                     .ok()
                     .map(|emulation| (*label, emulation))
             })
@@ -52,24 +52,22 @@ fn parse_emulation(browser: &str) -> Emulation {
     EMULATION_CACHE
         .get(browser)
         .cloned()
-        .unwrap_or(Emulation::Chrome142)
+        .unwrap_or(Profile::Chrome142)
 }
 
-fn parse_emulation_os(os: &str) -> EmulationOS {
-    static OS_CACHE: LazyLock<HashMap<&'static str, EmulationOS>> = LazyLock::new(|| {
+fn parse_emulation_os(os: &str) -> Platform {
+    static OS_CACHE: LazyLock<HashMap<&'static str, Platform>> = LazyLock::new(|| {
         generated_profiles::OPERATING_SYSTEMS
             .iter()
             .filter_map(|label| {
-                serde_json::from_value::<EmulationOS>(serde_json::Value::String(
-                    (*label).to_string(),
-                ))
-                .ok()
-                .map(|emulation_os| (*label, emulation_os))
+                serde_json::from_value::<Platform>(serde_json::Value::String((*label).to_string()))
+                    .ok()
+                    .map(|emulation_os| (*label, emulation_os))
             })
             .collect()
     });
 
-    OS_CACHE.get(os).cloned().unwrap_or(EmulationOS::MacOS)
+    OS_CACHE.get(os).cloned().unwrap_or(Platform::MacOS)
 }
 
 fn parse_trust_store_mode(value: &str) -> TrustStoreMode {

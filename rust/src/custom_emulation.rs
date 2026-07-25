@@ -1,22 +1,28 @@
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use std::collections::HashSet;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::time::Duration;
 use wreq::{
-    Emulation as WreqEmulation, EmulationFactory,
-    header::{HeaderMap, HeaderName, HeaderValue, OrigHeaderMap, OrigHeaderName},
+    Emulation as WreqEmulation, Group, IntoEmulation,
+    header::{HeaderCaseName, HeaderMap, HeaderName, HeaderValue, OrigHeaderMap},
     http1::Http1Options,
     http2::{
-        ExperimentalSettings, Http2Options, Priorities, Priority, PseudoId, PseudoOrder, Setting,
-        SettingId, SettingsOrder, StreamDependency, StreamId,
+        Http2Options, Priorities, Priority, PseudoId, PseudoOrder, SettingId, SettingsOrder,
+        StreamDependency, StreamId,
     },
     tls::{
-        AlpnProtocol, AlpsProtocol, CertificateCompressionAlgorithm, ExtensionType, TlsOptions,
-        TlsVersion,
+        AlpnProtocol, AlpsProtocol, ExtensionType, TlsOptions, TlsVersion,
+        compress::CertificateCompressor,
     },
 };
+
+use wreq_util::emulate::compress::{BrotliCompressor, ZlibCompressor, ZstdCompressor};
+// wreq-util 3.0.0-rc.14 renamed these: the profile enum is now `Profile`, the OS enum is
+// `Platform`, and `EmulationOption` became `Emulation` (which collides with wreq's own
+// `Emulation`, hence the aliases).
 use wreq_util::{
-    Emulation as BrowserEmulation, EmulationOS as BrowserEmulationOS, EmulationOption,
+    Emulation as EmulationOption, Platform as BrowserEmulationOS, Profile as BrowserEmulation,
 };
 
 #[derive(Debug, Deserialize, Default)]
@@ -65,8 +71,6 @@ struct CustomTlsOptions {
     record_size_limit: Option<u16>,
     #[serde(default)]
     psk_skip_session_ticket: Option<bool>,
-    #[serde(default)]
-    key_shares_limit: Option<u8>,
     #[serde(default)]
     psk_dhe_ke: Option<bool>,
     #[serde(default)]
@@ -159,8 +163,6 @@ struct CustomHttp2Options {
     headers_stream_dependency: Option<CustomHttp2StreamDependency>,
     #[serde(default)]
     priorities: Option<Vec<CustomHttp2Priority>>,
-    #[serde(default)]
-    experimental_settings: Option<Vec<CustomHttp2ExperimentalSetting>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -177,12 +179,6 @@ struct CustomHttp2StreamDependency {
     weight: u8,
     #[serde(default)]
     exclusive: bool,
-}
-
-#[derive(Debug, Deserialize)]
-struct CustomHttp2ExperimentalSetting {
-    id: u16,
-    value: u32,
 }
 
 fn parse_payload(emulation_json: &str) -> Result<CustomEmulationPayload> {
@@ -211,10 +207,10 @@ pub fn resolve_preset_emulation(
     emulation_json: Option<&str>,
 ) -> Result<WreqEmulation> {
     let mut emulation = EmulationOption::builder()
-        .emulation(browser)
-        .emulation_os(os)
+        .profile(browser)
+        .platform(os)
         .build()
-        .emulation();
+        .into_emulation();
 
     if let Some(emulation_json) = emulation_json {
         let payload = parse_payload(emulation_json)?;
@@ -233,9 +229,9 @@ pub fn preset_emulation_headers(
     browser: BrowserEmulation,
     os: BrowserEmulationOS,
 ) -> Result<Vec<(String, String)>> {
-    let mut emulation = resolve_preset_emulation(browser, os, None)?;
-    let orig_headers = emulation.orig_headers_mut().clone();
-    let mut headers = emulation.headers_mut().clone();
+    let emulation = resolve_preset_emulation(browser, os, None)?;
+    let orig_headers = emulation.orig_headers.clone();
+    let mut headers = emulation.headers.clone();
 
     let mut resolved = Vec::with_capacity(headers.len());
 
@@ -255,7 +251,7 @@ pub fn preset_emulation_headers(
     Ok(resolved)
 }
 
-fn decode_header_name(name: &OrigHeaderName) -> String {
+fn decode_header_name(name: &HeaderCaseName) -> String {
     String::from_utf8_lossy(name.as_ref()).into_owned()
 }
 
@@ -271,7 +267,13 @@ pub fn resolve_custom_emulation(emulation_json: &str) -> Result<WreqEmulation> {
         );
     }
 
-    let mut emulation = WreqEmulation::builder().build();
+    // wreq 6.0.0-rc.29 partitions the connection pool by `Group`, so two different custom
+    // emulations must not share one. Preset profiles get their group from wreq-util; derive
+    // ours from the config itself so identical configs pool together and different ones don't.
+    let mut group_hash = DefaultHasher::new();
+    emulation_json.hash(&mut group_hash);
+
+    let mut emulation = WreqEmulation::builder().build(Group::new(group_hash.finish()));
     apply_payload(&mut emulation, payload, false)?;
     Ok(emulation)
 }
@@ -297,32 +299,32 @@ fn apply_payload(
     overlay_on_preset: bool,
 ) -> Result<()> {
     if let Some(tls_options) = payload.tls_options {
-        *emulation.tls_options_mut() = Some(build_tls_options(tls_options)?);
+        emulation.tls_options = Some(build_tls_options(tls_options)?);
     }
 
     if let Some(http1_options) = payload.http1_options {
-        *emulation.http1_options_mut() = Some(build_http1_options(http1_options)?);
+        emulation.http1_options = Some(build_http1_options(http1_options)?);
     }
 
     if let Some(http2_options) = payload.http2_options {
-        *emulation.http2_options_mut() = Some(build_http2_options(http2_options)?);
+        emulation.http2_options = Some(build_http2_options(http2_options)?);
     }
 
     if let Some(headers) = payload.headers {
         if overlay_on_preset {
-            merge_header_map(emulation.headers_mut(), headers)?;
+            merge_header_map(&mut emulation.headers, headers)?;
         } else {
-            *emulation.headers_mut() = build_header_map(headers)?;
+            emulation.headers = build_header_map(headers)?;
         }
     }
 
     if let Some(orig_headers) = payload.orig_headers {
         if overlay_on_preset {
-            let mut merged = emulation.orig_headers_mut().clone();
+            let mut merged = emulation.orig_headers.clone();
             merged.extend(build_orig_header_map(orig_headers)?);
-            *emulation.orig_headers_mut() = merged;
+            emulation.orig_headers = merged;
         } else {
-            *emulation.orig_headers_mut() = build_orig_header_map(orig_headers)?;
+            emulation.orig_headers = build_orig_header_map(orig_headers)?;
         }
     }
 
@@ -441,9 +443,6 @@ fn build_tls_options(options: CustomTlsOptions) -> Result<TlsOptions> {
     if let Some(value) = options.psk_skip_session_ticket {
         builder = builder.psk_skip_session_ticket(value);
     }
-    if let Some(value) = options.key_shares_limit {
-        builder = builder.key_shares_limit(Some(value));
-    }
     if let Some(value) = options.psk_dhe_ke {
         builder = builder.psk_dhe_ke(value);
     }
@@ -463,10 +462,10 @@ fn build_tls_options(options: CustomTlsOptions) -> Result<TlsOptions> {
         builder = builder.sigalgs_list(value);
     }
     if let Some(value) = options.certificate_compression_algorithms {
-        builder = builder.certificate_compression_algorithms(
+        builder = builder.certificate_compressors(
             value
                 .into_iter()
-                .map(|algorithm| parse_certificate_compression_algorithm(&algorithm))
+                .map(|algorithm| parse_certificate_compressor(&algorithm))
                 .collect::<Result<Vec<_>>>()?,
         );
     }
@@ -601,11 +600,6 @@ fn build_http2_options(options: CustomHttp2Options) -> Result<Http2Options> {
     if let Some(priorities) = options.priorities {
         builder = builder.priorities(Some(build_priorities(priorities)?));
     }
-    if let Some(experimental_settings) = options.experimental_settings {
-        builder = builder
-            .experimental_settings(Some(build_experimental_settings(experimental_settings)?));
-    }
-
     Ok(builder.build())
 }
 
@@ -671,46 +665,6 @@ fn build_priorities(priorities: Vec<CustomHttp2Priority>) -> Result<Priorities> 
     Ok(builder.build())
 }
 
-fn build_experimental_settings(
-    experimental_settings: Vec<CustomHttp2ExperimentalSetting>,
-) -> Result<ExperimentalSettings> {
-    let mut builder = ExperimentalSettings::builder();
-    let mut seen_ids = HashSet::with_capacity(experimental_settings.len());
-    let max_id = 15u16;
-
-    for setting in experimental_settings {
-        if setting.id == 0 || setting.id > max_id {
-            bail!(
-                "Invalid emulation http2Options.experimentalSettings entry: id must be between 1 and {}",
-                max_id
-            );
-        }
-        if !matches!(SettingId::from(setting.id), SettingId::Unknown(_)) {
-            bail!(
-                "Invalid emulation http2Options.experimentalSettings entry: {} is a standard HTTP/2 setting id",
-                setting.id
-            );
-        }
-        if !seen_ids.insert(setting.id) {
-            bail!(
-                "Duplicate emulation http2Options.experimentalSettings id: {}",
-                setting.id
-            );
-        }
-
-        let setting =
-            Setting::from_id(SettingId::Unknown(setting.id), setting.value).ok_or_else(|| {
-                anyhow!(
-                    "Invalid emulation http2Options.experimentalSettings id: {}",
-                    setting.id
-                )
-            })?;
-        builder = builder.push(setting);
-    }
-
-    Ok(builder.build())
-}
-
 fn parse_tls_version(value: &str) -> Result<TlsVersion> {
     match value {
         "1.0" | "TLS1.0" => Ok(TlsVersion::TLS_1_0),
@@ -739,11 +693,11 @@ fn parse_alps_protocol(value: &str) -> Result<AlpsProtocol> {
     }
 }
 
-fn parse_certificate_compression_algorithm(value: &str) -> Result<CertificateCompressionAlgorithm> {
+fn parse_certificate_compressor(value: &str) -> Result<&'static dyn CertificateCompressor> {
     match value {
-        "zlib" => Ok(CertificateCompressionAlgorithm::ZLIB),
-        "brotli" => Ok(CertificateCompressionAlgorithm::BROTLI),
-        "zstd" => Ok(CertificateCompressionAlgorithm::ZSTD),
+        "zlib" => Ok(&ZlibCompressor),
+        "brotli" => Ok(&BrotliCompressor),
+        "zstd" => Ok(&ZstdCompressor),
         other => bail!("Invalid certificate compression algorithm: {other}"),
     }
 }
@@ -793,7 +747,7 @@ mod tests {
 
     #[test]
     fn preset_path_builds_and_overlays_custom_fields() {
-        let mut emulation = resolve_preset_emulation(
+        let emulation = resolve_preset_emulation(
             BrowserEmulation::Chrome142,
             BrowserEmulationOS::MacOS,
             Some(preset_overlay_payload()),
@@ -801,7 +755,7 @@ mod tests {
         .expect("preset emulation should build");
 
         let tls = emulation
-            .tls_options_mut()
+            .tls_options
             .clone()
             .expect("preset overlay should install tls options");
         assert!(!tls.session_ticket);
@@ -821,25 +775,25 @@ mod tests {
         );
 
         let header_value = emulation
-            .headers_mut()
+            .headers
             .get("x-test")
             .and_then(|value| value.to_str().ok());
         assert_eq!(header_value, Some("overlay"));
-        assert_eq!(emulation.orig_headers_mut().len(), 2);
+        assert_eq!(emulation.orig_headers.len(), 2);
     }
 
     #[test]
     fn standalone_custom_path_builds_tls_only_payload() {
-        let mut emulation = resolve_custom_emulation(
+        let emulation = resolve_custom_emulation(
             r#"{"tlsOptions":{"alpnProtocols":["HTTP2"],"sessionTicket":false,"minTlsVersion":"1.2"}}"#,
         )
         .expect("tls-only custom emulation should build");
 
-        assert!(emulation.http1_options_mut().is_none());
-        assert!(emulation.http2_options_mut().is_none());
+        assert!(emulation.http1_options.is_none());
+        assert!(emulation.http2_options.is_none());
 
         let tls = emulation
-            .tls_options_mut()
+            .tls_options
             .clone()
             .expect("tls options should be present");
         assert!(!tls.session_ticket);
@@ -848,25 +802,25 @@ mod tests {
 
     #[test]
     fn standalone_custom_path_builds_http1_only_payload() {
-        let mut emulation = resolve_custom_emulation(
+        let emulation = resolve_custom_emulation(
             r#"{"http1Options":{"http09Responses":true,"maxHeaders":32,"ignoreInvalidHeadersInResponses":true}}"#,
         )
         .expect("http1-only custom emulation should build");
 
         let http1 = emulation
-            .http1_options_mut()
+            .http1_options
             .clone()
             .expect("http1 options should be present");
         assert!(http1.h09_responses);
         assert_eq!(http1.h1_max_headers, Some(32));
         assert!(http1.ignore_invalid_headers_in_responses);
-        assert!(emulation.tls_options_mut().is_none());
-        assert!(emulation.http2_options_mut().is_none());
+        assert!(emulation.tls_options.is_none());
+        assert!(emulation.http2_options.is_none());
     }
 
     #[test]
     fn standalone_custom_path_builds_http2_only_payload() {
-        let mut emulation = resolve_custom_emulation(
+        let emulation = resolve_custom_emulation(
             r#"{
               "http2Options": {
                 "initialStreamId": 3,
@@ -876,41 +830,39 @@ mod tests {
                     "streamId": 3,
                     "dependency": {"dependencyId": 0, "weight": 42, "exclusive": true}
                   }
-                ],
-                "experimentalSettings": [{"id": 14, "value": 42}]
+                ]
               }
             }"#,
         )
         .expect("http2-only custom emulation should build");
 
         let http2 = emulation
-            .http2_options_mut()
+            .http2_options
             .clone()
             .expect("http2 options should be present");
         assert_eq!(http2.initial_stream_id, Some(3));
         assert!(http2.settings_order.is_some());
         assert!(http2.priorities.is_some());
-        assert!(http2.experimental_settings.is_some());
     }
 
     #[test]
     fn standalone_custom_path_builds_headers_only_payload() {
-        let mut emulation = resolve_custom_emulation(
+        let emulation = resolve_custom_emulation(
             r#"{"headers":[["User-Agent","custom-agent"],["X-Test","alpha"]],"origHeaders":["User-Agent","X-Test"]}"#,
         )
         .expect("headers-only custom emulation should build");
 
         let user_agent = emulation
-            .headers_mut()
+            .headers
             .get(USER_AGENT)
             .and_then(|value| value.to_str().ok());
         assert_eq!(user_agent, Some("custom-agent"));
-        assert_eq!(emulation.orig_headers_mut().len(), 2);
+        assert_eq!(emulation.orig_headers.len(), 2);
     }
 
     #[test]
     fn standalone_custom_path_builds_combined_payload() {
-        let mut emulation = resolve_custom_emulation(
+        let emulation = resolve_custom_emulation(
             r#"{
               "tlsOptions":{"alpnProtocols":["HTTP2"]},
               "http1Options":{"writev":true},
@@ -921,16 +873,16 @@ mod tests {
         )
         .expect("combined custom emulation should build");
 
-        assert!(emulation.tls_options_mut().is_some());
-        assert!(emulation.http1_options_mut().is_some());
-        assert!(emulation.http2_options_mut().is_some());
-        assert!(emulation.headers_mut().contains_key("x-test"));
-        assert_eq!(emulation.orig_headers_mut().len(), 1);
+        assert!(emulation.tls_options.is_some());
+        assert!(emulation.http1_options.is_some());
+        assert!(emulation.http2_options.is_some());
+        assert!(emulation.headers.contains_key("x-test"));
+        assert_eq!(emulation.orig_headers.len(), 1);
     }
 
     #[test]
     fn alps_cert_compression_and_extension_permutation_parse() {
-        let mut emulation = resolve_custom_emulation(
+        let emulation = resolve_custom_emulation(
             r#"{
               "tlsOptions":{
                 "alpsProtocols":["HTTP1","HTTP2"],
@@ -942,7 +894,7 @@ mod tests {
         .expect("tls extras should parse");
 
         let tls = emulation
-            .tls_options_mut()
+            .tls_options
             .clone()
             .expect("tls options should be present");
         assert_eq!(
@@ -950,8 +902,8 @@ mod tests {
             2
         );
         assert_eq!(
-            tls.certificate_compression_algorithms
-                .expect("certificate compression algorithms")
+            tls.certificate_compressors
+                .expect("certificate compressors")
                 .as_ref()
                 .len(),
             3
@@ -966,28 +918,26 @@ mod tests {
     }
 
     #[test]
-    fn settings_order_priorities_and_experimental_settings_build() {
-        let mut emulation = resolve_custom_emulation(
+    fn settings_order_and_priorities_build() {
+        let emulation = resolve_custom_emulation(
             r#"{
               "http2Options":{
                 "settingsOrder":["HeaderTableSize","EnablePush","MaxConcurrentStreams"],
                 "priorities":[
                   {"streamId":3,"dependency":{"dependencyId":0,"weight":1,"exclusive":false}},
                   {"streamId":5,"dependency":{"dependencyId":3,"weight":10,"exclusive":true}}
-                ],
-                "experimentalSettings":[{"id":14,"value":1},{"id":15,"value":2}]
+                ]
               }
             }"#,
         )
         .expect("http2 extras should parse");
 
         let http2 = emulation
-            .http2_options_mut()
+            .http2_options
             .clone()
             .expect("http2 options should be present");
         assert!(http2.settings_order.is_some());
         assert!(http2.priorities.is_some());
-        assert!(http2.experimental_settings.is_some());
     }
 
     #[test]
@@ -1019,14 +969,5 @@ mod tests {
                 .to_string()
                 .contains("Duplicate emulation http2Options.priorities streamId")
         );
-    }
-
-    #[test]
-    fn invalid_experimental_setting_ids_fail_with_targeted_error() {
-        let error = resolve_custom_emulation(
-            r#"{"http2Options":{"experimentalSettings":[{"id":1,"value":1}]}}"#,
-        )
-        .expect_err("should fail");
-        assert!(error.to_string().contains("standard HTTP/2 setting id"));
     }
 }

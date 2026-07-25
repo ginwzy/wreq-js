@@ -15,11 +15,12 @@ use tokio::sync::Mutex;
 use uuid::Uuid;
 use wreq::cookie::Jar;
 use wreq::header::OrigHeaderMap;
-use wreq::tls::{CertStore, TlsInfo};
+use wreq::tls::TlsInfo;
+use wreq::tls::trust::CertStore;
 use wreq::{Client as HttpClient, Method, Proxy, redirect};
 
 use crate::custom_emulation::resolve_emulation;
-use wreq_util::{Emulation as BrowserEmulation, EmulationOS as BrowserEmulationOS};
+use wreq_util::{Platform as BrowserEmulationOS, Profile as BrowserEmulation};
 
 #[cfg(test)]
 use std::sync::Mutex as StdMutex;
@@ -789,12 +790,12 @@ async fn make_request_inner(
 
 /// Build a client for explicit transports (full pooling config).
 fn build_client(config: &TransportConfig) -> Result<ResolvedClient> {
-    let mut emulation = resolve_emulation(
+    let emulation = resolve_emulation(
         config.browser,
         config.browser_os,
         config.emulation_json.as_deref(),
     )?;
-    let emulation_orig_headers = emulation.orig_headers_mut().clone();
+    let emulation_orig_headers = emulation.orig_headers.clone();
 
     let mut client_builder = HttpClient::builder().emulation(emulation);
 
@@ -804,9 +805,9 @@ fn build_client(config: &TransportConfig) -> Result<ResolvedClient> {
     }
 
     if config.insecure {
-        client_builder = client_builder.cert_verification(false);
+        client_builder = client_builder.tls_cert_verification(false);
     } else {
-        client_builder = client_builder.cert_store(build_cert_store(config.trust_store)?);
+        client_builder = client_builder.tls_cert_store(build_cert_store(config.trust_store)?);
     }
 
     for (domain, addrs) in &config.resolve {
@@ -822,7 +823,7 @@ fn build_client(config: &TransportConfig) -> Result<ResolvedClient> {
     }
 
     if let Some(pool_max_size) = config.pool_max_size {
-        client_builder = client_builder.pool_max_size(pool_max_size);
+        client_builder = client_builder.pool_max_size(pool_max_size as usize);
     }
 
     if let Some(connect_timeout) = config.connect_timeout {
@@ -848,12 +849,12 @@ fn build_client(config: &TransportConfig) -> Result<ResolvedClient> {
 
 /// Build a client for ephemeral (stateless) requests - no connection pooling.
 fn build_ephemeral_client(config: &SessionConfig) -> Result<ResolvedClient> {
-    let mut emulation = resolve_emulation(
+    let emulation = resolve_emulation(
         config.browser,
         config.browser_os,
         config.emulation_json.as_deref(),
     )?;
-    let emulation_orig_headers = emulation.orig_headers_mut().clone();
+    let emulation_orig_headers = emulation.orig_headers.clone();
 
     let mut client_builder = HttpClient::builder()
         .emulation(emulation)
@@ -865,9 +866,9 @@ fn build_ephemeral_client(config: &SessionConfig) -> Result<ResolvedClient> {
     }
 
     if config.insecure {
-        client_builder = client_builder.cert_verification(false);
+        client_builder = client_builder.tls_cert_verification(false);
     } else {
-        client_builder = client_builder.cert_store(build_cert_store(config.trust_store)?);
+        client_builder = client_builder.tls_cert_store(build_cert_store(config.trust_store)?);
     }
 
     if let Some(connect_timeout) = config.connect_timeout {
@@ -958,9 +959,9 @@ pub fn generate_session_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use boring2::stack::Stack;
-    use boring2::x509::store::X509StoreBuilder;
-    use boring2::x509::{X509, X509StoreContext};
+    use btls::stack::Stack;
+    use btls::x509::store::X509StoreBuilder;
+    use btls::x509::{X509, X509StoreContext};
     use std::env;
     use std::ffi::OsString;
     use std::fs;
@@ -1065,7 +1066,7 @@ mod tests {
         });
     }
 
-    fn build_test_store(mode: TrustStoreMode) -> boring2::x509::store::X509Store {
+    fn build_test_store(mode: TrustStoreMode) -> btls::x509::store::X509Store {
         match mode {
             TrustStoreMode::Mozilla => {
                 let mut builder = X509StoreBuilder::new().expect("mozilla builder");
@@ -1101,7 +1102,7 @@ mod tests {
         }
     }
 
-    fn verify_leaf(store: &boring2::x509::store::X509Store, leaf_pem: &str) -> bool {
+    fn verify_leaf(store: &btls::x509::store::X509Store, leaf_pem: &str) -> bool {
         let cert = X509::from_pem(leaf_pem.as_bytes()).expect("leaf cert");
         let chain = Stack::new().expect("empty chain");
         let mut context = X509StoreContext::new().expect("store context");
@@ -1158,7 +1159,7 @@ pub fn get_session_cookies(session_id: &str, url: &str) -> Result<Vec<(String, S
     let uri: wreq::Uri = url
         .parse()
         .with_context(|| format!("Invalid URL: {}", url))?;
-    let cookie_header = jar.cookies(&uri);
+    let cookie_header = jar.cookies(&uri, wreq::Version::HTTP_11);
 
     let pairs = match cookie_header {
         wreq::cookie::Cookies::Compressed(header_value) => {

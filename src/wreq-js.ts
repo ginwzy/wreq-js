@@ -20,7 +20,6 @@ import type {
   EmulationOS,
   HeadersInit,
   HeaderTuple,
-  Http2ExperimentalSetting,
   Http2Priority,
   Http2PseudoHeaderId,
   Http2SettingId,
@@ -1858,8 +1857,6 @@ const HTTP2_SETTING_IDS = new Set<Http2SettingId>([
   "NoRfc7540Priorities",
 ]);
 const HTTP2_PSEUDO_HEADER_IDS = new Set<Http2PseudoHeaderId>(["Method", "Scheme", "Authority", "Path", "Protocol"]);
-const STANDARD_HTTP2_SETTING_ID_VALUES = new Set([1, 2, 3, 4, 5, 6, 8, 9]);
-const MAX_HTTP2_EXPERIMENTAL_SETTING_ID = 15;
 const TLS_VERSION_ALIASES = new Map<string, "1.0" | "1.1" | "1.2" | "1.3">([
   ["1.0", "1.0"],
   ["1.1", "1.1"],
@@ -2038,11 +2035,6 @@ function normalizeCustomTlsOptions(options: CustomTlsOptions | undefined): Custo
   if (options.recordSizeLimit !== undefined) {
     validateIntegerInRange(options.recordSizeLimit, 0, 65535, "emulation.tlsOptions.recordSizeLimit");
     normalized.recordSizeLimit = options.recordSizeLimit;
-  }
-
-  if (options.keySharesLimit !== undefined) {
-    validateIntegerInRange(options.keySharesLimit, 0, 255, "emulation.tlsOptions.keySharesLimit");
-    normalized.keySharesLimit = options.keySharesLimit;
   }
 
   if (options.certificateCompressionAlgorithms !== undefined) {
@@ -2314,51 +2306,6 @@ function normalizeCustomHttp2Options(options: CustomHttp2Options | undefined): C
       });
     }
     normalized.priorities = priorities;
-  }
-
-  if (options.experimentalSettings !== undefined) {
-    if (!Array.isArray(options.experimentalSettings)) {
-      throw new RequestError("emulation.http2Options.experimentalSettings must be an array");
-    }
-
-    const experimentalSettings: Http2ExperimentalSetting[] = [];
-    const seenIds = new Set<number>();
-
-    for (const [index, setting] of options.experimentalSettings.entries()) {
-      if (!isPlainObject(setting)) {
-        throw new RequestError(`emulation.http2Options.experimentalSettings[${index}] must be an object`);
-      }
-
-      validateIntegerInRange(
-        setting.id,
-        1,
-        MAX_HTTP2_EXPERIMENTAL_SETTING_ID,
-        `emulation.http2Options.experimentalSettings[${index}].id`,
-      );
-      if (STANDARD_HTTP2_SETTING_ID_VALUES.has(setting.id)) {
-        throw new RequestError(
-          `emulation.http2Options.experimentalSettings[${index}].id must not be a standard HTTP/2 setting id`,
-        );
-      }
-      if (seenIds.has(setting.id)) {
-        throw new RequestError(`Duplicate emulation.http2Options.experimentalSettings id: ${setting.id}`);
-      }
-      seenIds.add(setting.id);
-
-      validateIntegerInRange(
-        setting.value,
-        0,
-        0xffffffff,
-        `emulation.http2Options.experimentalSettings[${index}].value`,
-      );
-
-      experimentalSettings.push({
-        id: setting.id,
-        value: setting.value,
-      });
-    }
-
-    normalized.experimentalSettings = experimentalSettings;
   }
 
   return isNonEmpty(normalized) ? normalized : undefined;
@@ -3982,7 +3929,6 @@ export type {
   CustomTlsOptions,
   EmulationOS,
   HeadersInit,
-  Http2ExperimentalSetting,
   Http2Priority,
   Http2PseudoHeaderId,
   Http2SettingId,

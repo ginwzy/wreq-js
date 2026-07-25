@@ -6,7 +6,9 @@ import { getEmulationHeaders, getProfiles, RequestError, resolveProfile, fetch a
 import { httpUrl } from "../helpers/http.js";
 
 // Added by the client rather than the emulation profile, so they are not part of its header set.
-const TRANSPORT_HEADERS = new Set(["host", "connection", "content-length", "accept-encoding"]);
+// Accept-Encoding is not in this list: the profile owns it, which is what puts it in the
+// browser's real header position rather than appended at the end.
+const TRANSPORT_HEADERS = new Set(["host", "connection", "content-length"]);
 
 describe("HTTP profiles", () => {
   test("returns available browser profiles", () => {

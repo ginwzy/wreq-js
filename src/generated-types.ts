@@ -46,6 +46,8 @@ export type BrowserProfile =
   | 'chrome_145'
   | 'chrome_146'
   | 'chrome_147'
+  | 'chrome_148'
+  | 'chrome_149'
   | 'edge_101'
   | 'edge_122'
   | 'edge_127'
@@ -64,6 +66,7 @@ export type BrowserProfile =
   | 'edge_145'
   | 'edge_146'
   | 'edge_147'
+  | 'edge_148'
   | 'opera_116'
   | 'opera_117'
   | 'opera_118'
@@ -79,6 +82,7 @@ export type BrowserProfile =
   | 'opera_128'
   | 'opera_129'
   | 'opera_130'
+  | 'opera_131'
   | 'firefox_109'
   | 'firefox_117'
   | 'firefox_128'
@@ -97,6 +101,8 @@ export type BrowserProfile =
   | 'firefox_147'
   | 'firefox_148'
   | 'firefox_149'
+  | 'firefox_150'
+  | 'firefox_151'
   | 'safari_ios_17.2'
   | 'safari_ios_17.4.1'
   | 'safari_ios_16.5'
@@ -120,6 +126,8 @@ export type BrowserProfile =
   | 'safari_26'
   | 'safari_26.1'
   | 'safari_26.2'
+  | 'safari_26.3'
+  | 'safari_26.4'
   | 'safari_ipad_26'
   | 'safari_ipad_26.2'
   | 'safari_ios_26'
@@ -163,14 +171,14 @@ export type BrowserAlias =
  * These move as new profiles land upstream, so diff this map when upgrading.
  */
 export const BROWSER_ALIASES: Record<BrowserAlias, BrowserProfile> = {
-  chrome: 'chrome_147',
-  edge: 'edge_147',
-  firefox: 'firefox_149',
+  chrome: 'chrome_149',
+  edge: 'edge_148',
+  firefox: 'firefox_151',
   firefox_android: 'firefox_android_135',
   firefox_private: 'firefox_private_136',
   okhttp: 'okhttp_5',
-  opera: 'opera_130',
-  safari: 'safari_26.2',
+  opera: 'opera_131',
+  safari: 'safari_26.4',
   safari_ios: 'safari_ios_26.2',
   safari_ipad: 'safari_ipad_26.2',
 };

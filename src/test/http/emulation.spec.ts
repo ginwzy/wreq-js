@@ -146,38 +146,6 @@ describe("HTTP custom emulation", () => {
     );
   });
 
-  test("rejects duplicate experimental setting ids", async () => {
-    await assert.rejects(
-      wreqFetch(httpUrl("/get"), {
-        emulation: {
-          http2Options: {
-            experimentalSettings: [
-              { id: 14, value: 1 },
-              { id: 14, value: 2 },
-            ],
-          },
-        },
-      }),
-      (error: unknown) =>
-        error instanceof RequestError &&
-        /Duplicate emulation\.http2Options\.experimentalSettings id/.test(error.message),
-    );
-  });
-
-  test("rejects standard setting ids inside experimentalSettings", async () => {
-    await assert.rejects(
-      wreqFetch(httpUrl("/get"), {
-        emulation: {
-          http2Options: {
-            experimentalSettings: [{ id: 1, value: 1 }],
-          },
-        },
-      }),
-      (error: unknown) =>
-        error instanceof RequestError && /must not be a standard HTTP\/2 setting id/.test(error.message),
-    );
-  });
-
   test("rejects readBufExactSize and maxBufSize together", async () => {
     await assert.rejects(
       wreqFetch(httpUrl("/get"), {

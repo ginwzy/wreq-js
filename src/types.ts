@@ -112,11 +112,6 @@ export interface Http2Priority {
   dependency: Http2StreamDependency;
 }
 
-export interface Http2ExperimentalSetting {
-  id: number;
-  value: number;
-}
-
 export interface CustomTlsOptions {
   alpnProtocols?: AlpnProtocol[];
   alpsProtocols?: AlpsProtocol[];
@@ -132,7 +127,6 @@ export interface CustomTlsOptions {
   enableSignedCertTimestamps?: boolean;
   recordSizeLimit?: number;
   pskSkipSessionTicket?: boolean;
-  keySharesLimit?: number;
   pskDheKe?: boolean;
   renegotiation?: boolean;
   delegatedCredentials?: string;
@@ -180,7 +174,6 @@ export interface CustomHttp2Options {
   headersPseudoOrder?: Http2PseudoHeaderId[];
   headersStreamDependency?: Http2StreamDependency;
   priorities?: Http2Priority[];
-  experimentalSettings?: Http2ExperimentalSetting[];
 }
 
 export interface CustomEmulationOptions {

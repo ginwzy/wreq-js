@@ -4,12 +4,11 @@ use std::env;
 use std::fs;
 use std::path::Path;
 
-use strum::VariantArray;
-use wreq_util::{Emulation, EmulationOS};
+use wreq_util::{Platform, Profile};
 
 fn main() {
     // Get all variants directly from the enum using VARIANTS API
-    let profiles: Vec<String> = Emulation::VARIANTS
+    let profiles: Vec<String> = Profile::VARIANTS
         .iter()
         .map(|variant| {
             serde_json::to_value(variant)
@@ -20,7 +19,7 @@ fn main() {
         })
         .collect();
 
-    let operating_systems: Vec<String> = EmulationOS::VARIANTS
+    let operating_systems: Vec<String> = Platform::VARIANTS
         .iter()
         .map(|variant| {
             serde_json::to_value(variant)
