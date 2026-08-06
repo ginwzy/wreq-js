@@ -173,6 +173,10 @@ jobs:
             node-version: 24
             arch: x64
             platform-arch: linux-x64-gnu
+          - os: ubuntu-24.04
+            node-version: 26
+            arch: x64
+            platform-arch: linux-x64-gnu
           - os: macos-15-intel
             node-version: 20
             arch: x64
@@ -185,6 +189,10 @@ jobs:
             node-version: 24
             arch: x64
             platform-arch: darwin-x64
+          - os: macos-15-intel
+            node-version: 26
+            arch: x64
+            platform-arch: darwin-x64
           - os: windows-2022
             node-version: 20
             arch: x64
@@ -195,6 +203,10 @@ jobs:
             platform-arch: win32-x64-msvc
           - os: windows-2022
             node-version: 24
+            arch: x64
+            platform-arch: win32-x64-msvc
+          - os: windows-2022
+            node-version: 26
             arch: x64
             platform-arch: win32-x64-msvc
           # ARM64 tests on supported platforms

@@ -110,6 +110,10 @@ jobs:
             node-version: 24
             arch: x64
             platform-arch: linux-x64-gnu
+          - os: ubuntu-24.04
+            node-version: 26
+            arch: x64
+            platform-arch: linux-x64-gnu
           - os: macos-14
             node-version: 24
             arch: arm64

@@ -92,6 +92,9 @@
     "tsx": "^4.23.1",
     "typescript": "^6.0.3"
   },
+  "engines": {
+    "node": ">=20.0.0"
+  },
   "os": [
     "darwin",
     "linux",
