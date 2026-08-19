@@ -5,7 +5,7 @@
 # npm cannot configure a trusted publisher for a package that does not exist
 # yet ("Package must exist" — https://docs.npmjs.com/cli/v12/commands/npm-trust),
 # so the release workflow's OIDC publish has nothing to authenticate against
-# until each name has been claimed once. This script claims all seven names
+# until each name has been claimed once. This script claims all eight names
 # with an empty 0.0.0 placeholder and then points them at the release workflow.
 #
 # Run it once, locally, from a logged-in npm account with 2FA enabled. Every
@@ -67,16 +67,31 @@ for dir in npm/*/; do
   fi
 
   if [[ -z "$DRY_RUN" ]]; then
-    # Existing configurations are left alone; npm errors on a duplicate.
-    if npm trust list "$name" 2>/dev/null | grep -q "$WORKFLOW"; then
-      echo "    trusted publisher already configured"
-    else
-      npm trust github "$name" \
-        --file "$WORKFLOW" \
-        --repo "$REPO" \
-        --allow-publish \
-        --yes
+    # `npm trust list` needs an OTP, so on a fresh login it fails with EOTP and
+    # writes nothing to stdout. Guarding on its output therefore reported every
+    # already-configured package as unconfigured, and the npm trust github that
+    # followed died on 409 "trusted publisher config already exists" before the
+    # loop reached the package that actually needed claiming.
+    #
+    # Ask for the configuration and classify the failure instead, the same way
+    # the release workflow treats "cannot publish over" as success. tee keeps
+    # npm's interactive auth prompt visible while still capturing the text.
+    set +e
+    out=$(npm trust github "$name" \
+      --file "$WORKFLOW" \
+      --repo "$REPO" \
+      --allow-publish \
+      --yes 2>&1 | tee /dev/stderr)
+    rc=${PIPESTATUS[0]}
+    set -e
+
+    if [[ $rc -eq 0 ]]; then
       echo "    trusted publisher configured"
+    elif [[ "$out" == *"already exists"* ]]; then
+      echo "    trusted publisher already configured, skipping"
+    else
+      echo "    failed to configure trusted publishing for $name" >&2
+      exit 1
     fi
   fi
 
