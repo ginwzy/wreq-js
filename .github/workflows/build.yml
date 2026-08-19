@@ -42,10 +42,12 @@ jobs:
           - host: windows-2022
             target: x86_64-pc-windows-msvc
             arch: x64
+            generator: Visual Studio 17 2022
             build: npm run build:rust -- --target x86_64-pc-windows-msvc
           - host: windows-11-arm
             target: aarch64-pc-windows-msvc
             arch: arm64
+            generator: Ninja
             build: npm run build:rust -- --target aarch64-pc-windows-msvc
 
     name: Build - ${{ matrix.settings.target }}
@@ -117,6 +119,14 @@ jobs:
 
           echo "$TOOLCHAIN_DIR/bin" >> "$GITHUB_PATH"
 
+      - name: Setup MSVC arm64 environment
+        # Ninja resolves cl.exe and clang-cl from PATH rather than from a
+        # toolset, so the arm64 developer environment has to be set up first.
+        if: matrix.settings.target == 'aarch64-pc-windows-msvc'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: arm64
+
       - name: Install dependencies
         run: npm ci
       
@@ -154,13 +164,17 @@ jobs:
             's/let bssl_dir = build_boringssl_or_get_prebuilt(config);/let bssl_dir = build_boringssl_or_get_prebuilt(config); if config.target.ends_with("-msvc") { println!("cargo:rustc-link-search=native={}\/lib", bssl_dir.display()); }/' \
             'build_boringssl_or_get_prebuilt(config); if config.target.ends_with("-msvc")'
 
-          patch_and_verify \
-            's/cfg.build_target("ssl").build();/\/\/ cfg.build_target("ssl").build();/' \
-            '// cfg.build_target'
+          # ALL_BUILD is a Visual Studio generator target and does not exist
+          # under Ninja, where ssl and crypto build as upstream intends.
+          if [ "${{ matrix.settings.generator }}" = "Visual Studio 17 2022" ]; then
+            patch_and_verify \
+              's/cfg.build_target("ssl").build();/\/\/ cfg.build_target("ssl").build();/' \
+              '// cfg.build_target'
 
-          patch_and_verify \
-            's/cfg.build_target("crypto").build()/cfg.build_target("ALL_BUILD").build()/' \
-            'cfg.build_target("ALL_BUILD").build()'
+            patch_and_verify \
+              's/cfg.build_target("crypto").build()/cfg.build_target("ALL_BUILD").build()/' \
+              'cfg.build_target("ALL_BUILD").build()'
+          fi
 
       - name: Patch btls-sys for windows-arm64
         if: matrix.settings.target == 'aarch64-pc-windows-msvc'
@@ -176,38 +190,52 @@ jobs:
             exit 1
           fi
 
-          # get_boringssl_cmake_config() returns early whenever host == target,
-          # before the match arm that sets OPENSSL_NO_ASM for Windows. A native
-          # arm64 build therefore configures BoringSSL with assembly enabled,
-          # CMake settles on cl.exe as the assembler, and crypto.vcxproj dies on
-          # LNK1181 looking for objects nothing ever assembled. x64 survives the
-          # same path only because we install NASM above; there is no NASM for
-          # arm64 and the x86 assembly would be wrong there anyway.
+          # BoringSSL ships arm64 Windows assembly (gen/**/*-armv8-win.S) but it
+          # is gas syntax, and its CMakeLists only routes x86 Windows through
+          # ASM_NASM:
           #
-          # Only the early return inside that function is exempted. The
-          # identical condition in should_use_cmake_cross_compilation() has to
-          # keep returning false so a native build is not told it is a cross
-          # build.
+          #   if(WIN32 AND CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64|...")
+          #     enable_language(ASM_NASM)
+          #   else()
+          #     enable_language(ASM)
+          #
+          # arm64 takes the else branch, where CMake nominates cl.exe, which
+          # cannot assemble gas syntax. Point the ASM language at clang-cl: it
+          # understands the syntax and accepts the MSVC-style flags cmake-rs puts
+          # in CMAKE_ASM_FLAGS, which plain clang rejects ("unknown argument:
+          # '-nologo'").
+          #
+          # Deliberately not OPENSSL_NO_ASM. btls-sys would set that for us, but
+          # only on its cross-compilation path, and dropping assembly costs bulk
+          # crypto throughput for every arm64 user.
           python3 - "$FILE" <<'PY'
           import io, sys
 
           path = sys.argv[1]
           src = io.open(path, encoding="utf-8").read()
 
-          old = "    if config.host == config.target {\n        return boringssl_cmake;\n    }"
+          old = (
+              '            boringssl_cmake.define("CMAKE_MSVC_RUNTIME_LIBRARY", "MultiThreadedDLL");\n'
+              "        }\n"
+              "    }\n"
+          )
           new = (
-              "    if config.host == config.target\n"
-              '        && !(config.target_os == "windows" && config.target_arch == "aarch64")\n'
-              "    {\n        return boringssl_cmake;\n    }"
+              '            boringssl_cmake.define("CMAKE_MSVC_RUNTIME_LIBRARY", "MultiThreadedDLL");\n'
+              "        }\n"
+              "\n"
+              '        if config.target_arch == "aarch64" {\n'
+              '            boringssl_cmake.define("CMAKE_ASM_COMPILER", "clang-cl");\n'
+              "        }\n"
+              "    }\n"
           )
 
-          # A count check rather than a bare replace: an upstream rename must
+          # A count check rather than a bare replace: an upstream edit has to
           # fail the build instead of silently producing an unpatched binding.
           if src.count(old) != 1:
-              sys.exit(f"expected 1 early return to patch, found {src.count(old)} -- upstream build script changed")
+              sys.exit(f"expected 1 windows block to patch, found {src.count(old)} -- upstream build script changed")
 
           io.open(path, "w", encoding="utf-8").write(src.replace(old, new, 1))
-          print("patched the host == target early return")
+          print("pointed the ASM language at clang-cl for windows-arm64")
           PY
 
       - name: Build native module (x86_64 musl target)
@@ -249,7 +277,7 @@ jobs:
         env:
           RUST_BACKTRACE: "1"
           CARGO_TERM_VERBOSE: "true"
-          CMAKE_GENERATOR: "Visual Studio 17 2022"
+          CMAKE_GENERATOR: ${{ matrix.settings.generator }}
           CARGO_BUILD_TARGET: ${{ matrix.settings.target }}
           CARGO_TARGET_DIR: rust/target
           DEBUG: "false"

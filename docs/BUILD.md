@@ -129,16 +129,26 @@ sudo dnf install gcc
 - Install [Visual Studio Build Tools](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022) with C++ support
 - Or use WSL2 (recommended)
 
-On x64, BoringSSL is built with its assembly implementations, so NASM has to be
-on `PATH` (CI installs it; locally, `choco install nasm`).
+Both architectures build BoringSSL with its assembly implementations, but they
+get there differently, because BoringSSL ships two syntaxes:
 
-arm64 is built with `OPENSSL_NO_ASM`, which means pure-C BoringSSL and slower
-bulk crypto than x64. It is not a choice so much as the only configuration that
-builds: `btls-sys` only reaches its `OPENSSL_NO_ASM` branch when
-`host != target`, so a native arm64 build otherwise asks CMake for assembly,
-gets `cl.exe` nominated as the assembler, and fails to link. The release
-workflow patches the early return that skips that branch. TLS and HTTP/2
-fingerprints are identical either way — only throughput differs.
+- **x64** uses the NASM-syntax `gen/**/*-x86_64-win.asm`, so NASM has to be on
+  `PATH` (CI installs it; locally, `choco install nasm`). CMake routes these
+  through `ASM_NASM`, and the Visual Studio generator handles them.
+- **arm64** uses the gas-syntax `gen/**/*-armv8-win.S`. BoringSSL's CMakeLists
+  only sends x86 Windows to `ASM_NASM` and drops everything else into the
+  generic `ASM` language, where CMake nominates `cl.exe` — which cannot
+  assemble gas. The release workflow patches `btls-sys` to set
+  `CMAKE_ASM_COMPILER=clang-cl`, and builds arm64 with the **Ninja** generator,
+  since upstream's `BUILDING.md` states the Visual Studio generator cannot
+  assemble BoringSSL at all. `clang-cl` rather than `clang` because `cmake-rs`
+  passes MSVC-style flags in `CMAKE_ASM_FLAGS` that the GNU-style driver
+  rejects (`unknown argument: '-nologo'`).
+
+The straightforward alternative for arm64 is `OPENSSL_NO_ASM`, which `btls-sys`
+sets itself on its cross-compilation path. It builds, but it means pure-C
+BoringSSL and a real bulk-crypto throughput loss for every arm64 user, so we
+keep the assembly instead. Fingerprints are identical either way.
 
 ## Troubleshooting
 
