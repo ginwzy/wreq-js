@@ -187,6 +187,7 @@ const NATIVE_PLATFORMS = [
   "linux-arm64-gnu",
   "linux-arm64-musl",
   "win32-x64-msvc",
+  "win32-arm64-msvc",
 ] as const;
 
 type NativePlatform = (typeof NATIVE_PLATFORMS)[number];
@@ -213,6 +214,10 @@ function resolveNativePlatform(): NativePlatform | undefined {
 
   if (platform === "win32" && arch === "x64") {
     return "win32-x64-msvc";
+  }
+
+  if (platform === "win32" && arch === "arm64") {
+    return "win32-arm64-msvc";
   }
 
   return undefined;

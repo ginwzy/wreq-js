@@ -43,7 +43,10 @@ jobs:
             target: x86_64-pc-windows-msvc
             arch: x64
             build: npm run build:rust -- --target x86_64-pc-windows-msvc
-          
+          - host: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            arch: arm64
+            build: npm run build:rust -- --target aarch64-pc-windows-msvc
 
     name: Build - ${{ matrix.settings.target }}
     runs-on: ${{ matrix.settings.host }}
@@ -73,15 +76,19 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          choco install ninja -y
+          # windows-11-arm ships Ninja in the image and choco has no native
+          # arm64 build, so only reach for choco when ninja is missing.
+          if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) {
+            choco install ninja -y
+          }
           ninja --version
 
-      - name: Setup NASM (Windows)
-        if: runner.os == 'Windows'
+      - name: Setup NASM (Windows x64)
+        if: matrix.settings.target == 'x86_64-pc-windows-msvc'
         uses: ilammy/setup-nasm@v1
 
-      - name: Verify NASM (Windows)
-        if: runner.os == 'Windows'
+      - name: Verify NASM (Windows x64)
+        if: matrix.settings.target == 'x86_64-pc-windows-msvc'
         shell: pwsh
         run: nasm -v
 
@@ -195,7 +202,7 @@ jobs:
           RUST_BACKTRACE: "1"
           CARGO_TERM_VERBOSE: "true"
           CMAKE_GENERATOR: "Visual Studio 17 2022"
-          CARGO_BUILD_TARGET: x86_64-pc-windows-msvc
+          CARGO_BUILD_TARGET: ${{ matrix.settings.target }}
           CARGO_TARGET_DIR: rust/target
           DEBUG: "false"
           OPT_LEVEL: "3"
@@ -260,7 +267,7 @@ jobs:
             '
 
       - name: Smoke test native addon
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' || runner.os == 'Windows'
         env:
           WREQ_TARGET: ${{ matrix.settings.target }}
         run: node scripts/smoke-native.cjs
