@@ -1,0 +1,118 @@
+name: 🧪 Experiment - android + armv7
+
+# Probes two candidate targets. Neither is in napi.targets yet: anything listed
+# there is release-blocking (npm run artifacts fails on a missing addon), and
+# neither of these can be smoke tested in CI — there is no Android runner, and
+# an emulator would not be Termux's Bionic anyway. So build, prove the ELF is
+# what we think it is, publish the addon as an artifact, and let the people who
+# actually asked confirm it loads before anything becomes permanent.
+#
+# android-arm64: requested in discussions#110 (Termux). btls-sys has real NDK
+# support (cmake_params_android, pick_best_android_ndk_toolchain,
+# android.toolchain.cmake, ANDROID_ABI=arm64-v8a) and ubuntu-24.04 already
+# exports ANDROID_NDK_HOME, so no NDK install step is needed.
+#
+# armv7: 32-bit Raspberry Pi and older ARM SBCs. btls-sys ships
+# cmake/armv7-linux.cmake, which sets only CMAKE_SYSTEM_NAME/PROCESSOR and
+# "relies on environment variables to set the compiler and include paths" —
+# hence the CC/CXX/AR block below.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        settings:
+          - variant: android-arm64
+            target: aarch64-linux-android
+            expect_arch: aarch64
+          - variant: linux-armv7-gnueabihf
+            target: armv7-unknown-linux-gnueabihf
+            expect_arch: ARM
+
+    name: ${{ matrix.settings.variant }}
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.settings.target }}
+
+      - name: Install clang (bindgen needs libclang for the btls-sys FFI)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libclang-dev
+
+      - name: Install the armv7 cross toolchain
+        if: matrix.settings.target == 'armv7-unknown-linux-gnueabihf'
+        run: sudo apt-get install -y gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Show the NDK we are about to use
+        if: matrix.settings.target == 'aarch64-linux-android'
+        run: |
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
+          ls "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin" | grep -E "aarch64-linux-android(21|24|3[0-9])-clang$" | head
+
+      - name: Build native module (android-arm64)
+        if: matrix.settings.target == 'aarch64-linux-android'
+        env:
+          CARGO_BUILD_TARGET: aarch64-linux-android
+          CARGO_TARGET_DIR: rust/target
+        run: |
+          set -eux
+          NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export PATH="$NDK_BIN:$PATH"
+
+          # API 24 is the floor btls-sys assumes (it sets CMAKE_SYSTEM_VERSION 21,
+          # but Termux itself needs 24+).
+          export CC_aarch64_linux_android="$NDK_BIN/aarch64-linux-android24-clang"
+          export CXX_aarch64_linux_android="$NDK_BIN/aarch64-linux-android24-clang++"
+          export AR_aarch64_linux_android="$NDK_BIN/llvm-ar"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CC_aarch64_linux_android"
+          export BINDGEN_EXTRA_CLANG_ARGS="--target=aarch64-linux-android24 --sysroot=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+
+          npm run build:rust -- --target aarch64-linux-android
+
+      - name: Build native module (armv7)
+        if: matrix.settings.target == 'armv7-unknown-linux-gnueabihf'
+        env:
+          CARGO_BUILD_TARGET: armv7-unknown-linux-gnueabihf
+          CARGO_TARGET_DIR: rust/target
+          CC_armv7_unknown_linux_gnueabihf: arm-linux-gnueabihf-gcc
+          CXX_armv7_unknown_linux_gnueabihf: arm-linux-gnueabihf-g++
+          AR_armv7_unknown_linux_gnueabihf: arm-linux-gnueabihf-ar
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
+          BINDGEN_EXTRA_CLANG_ARGS: --target=armv7-unknown-linux-gnueabihf --sysroot=/usr/arm-linux-gnueabihf
+        run: npm run build:rust -- --target armv7-unknown-linux-gnueabihf
+
+      - name: Prove the addon is the architecture we think it is
+        run: |
+          set -eux
+          ls -la rust/*.node
+          file rust/*.node
+          readelf -h rust/*.node | grep -E "Class|Machine|OS/ABI"
+          file rust/*.node | grep -q "${{ matrix.settings.expect_arch }}"
+          echo "--- runtime deps ---"
+          readelf -d rust/*.node | grep NEEDED || true
+
+      - name: Upload addon
+        uses: actions/upload-artifact@v7
+        with:
+          name: probe-${{ matrix.settings.variant }}
+          path: rust/*.node
+          if-no-files-found: error
