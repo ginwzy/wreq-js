@@ -162,6 +162,54 @@ jobs:
             's/cfg.build_target("crypto").build()/cfg.build_target("ALL_BUILD").build()/' \
             'cfg.build_target("ALL_BUILD").build()'
 
+      - name: Patch btls-sys for windows-arm64
+        if: matrix.settings.target == 'aarch64-pc-windows-msvc'
+        shell: bash
+        run: |
+          set -eux
+          cd rust
+
+          FILE=$(find ~/.cargo/registry/src -name "main.rs" | grep "btls-sys" | grep "build")
+
+          if [ -z "$FILE" ]; then
+            echo "Error: Could not find btls-sys build/main.rs to patch"
+            exit 1
+          fi
+
+          # get_boringssl_cmake_config() returns early whenever host == target,
+          # before the match arm that sets OPENSSL_NO_ASM for Windows. A native
+          # arm64 build therefore configures BoringSSL with assembly enabled,
+          # CMake settles on cl.exe as the assembler, and crypto.vcxproj dies on
+          # LNK1181 looking for objects nothing ever assembled. x64 survives the
+          # same path only because we install NASM above; there is no NASM for
+          # arm64 and the x86 assembly would be wrong there anyway.
+          #
+          # Only the early return inside that function is exempted. The
+          # identical condition in should_use_cmake_cross_compilation() has to
+          # keep returning false so a native build is not told it is a cross
+          # build.
+          python3 - "$FILE" <<'PY'
+          import io, sys
+
+          path = sys.argv[1]
+          src = io.open(path, encoding="utf-8").read()
+
+          old = "    if config.host == config.target {\n        return boringssl_cmake;\n    }"
+          new = (
+              "    if config.host == config.target\n"
+              '        && !(config.target_os == "windows" && config.target_arch == "aarch64")\n'
+              "    {\n        return boringssl_cmake;\n    }"
+          )
+
+          # A count check rather than a bare replace: an upstream rename must
+          # fail the build instead of silently producing an unpatched binding.
+          if src.count(old) != 1:
+              sys.exit(f"expected 1 early return to patch, found {src.count(old)} -- upstream build script changed")
+
+          io.open(path, "w", encoding="utf-8").write(src.replace(old, new, 1))
+          print("patched the host == target early return")
+          PY
+
       - name: Build native module (x86_64 musl target)
         if: matrix.settings.target == 'x86_64-unknown-linux-musl'
         env:

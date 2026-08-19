@@ -129,6 +129,17 @@ sudo dnf install gcc
 - Install [Visual Studio Build Tools](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022) with C++ support
 - Or use WSL2 (recommended)
 
+On x64, BoringSSL is built with its assembly implementations, so NASM has to be
+on `PATH` (CI installs it; locally, `choco install nasm`).
+
+arm64 is built with `OPENSSL_NO_ASM`, which means pure-C BoringSSL and slower
+bulk crypto than x64. It is not a choice so much as the only configuration that
+builds: `btls-sys` only reaches its `OPENSSL_NO_ASM` branch when
+`host != target`, so a native arm64 build otherwise asks CMake for assembly,
+gets `cl.exe` nominated as the assembler, and fails to link. The release
+workflow patches the early return that skips that branch. TLS and HTTP/2
+fingerprints are identical either way — only throughput differs.
+
 ## Troubleshooting
 
 ### "Cannot find module 'wreq-js.*.node'"
