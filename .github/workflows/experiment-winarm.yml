@@ -19,12 +19,14 @@ jobs:
       matrix:
         settings:
           # A: cross from an x64 host. host != target, so btls-sys takes its
-          #    supported Windows cross path and sets OPENSSL_NO_ASM=YES itself.
+          #    supported Windows cross path and sets OPENSSL_NO_ASM itself.
+          #    The x64 host BoringSSL build still happens and still wants NASM.
           - variant: a-cross-from-x64
             host: windows-2022
             node_arch: x64
             generator: Visual Studio 17 2022
-            patch: base
+            patch: linksearch,allbuild
+            nasm: true
             smoke: false
           # B: stay native, patch out the host == target early return so the
           #    OPENSSL_NO_ASM arm is reached.
@@ -32,15 +34,19 @@ jobs:
             host: windows-11-arm
             node_arch: arm64
             generator: Visual Studio 17 2022
-            patch: base+earlyreturn
+            patch: linksearch,allbuild,earlyreturn
+            nasm: false
             smoke: true
-          # C: stay native, swap the generator. ALL_BUILD is a VS-generator
-          #    target, so the base patch does not apply here.
-          - variant: c-native-ninja
+          # D: Ninja needs OPENSSL_NO_ASM too — without it CMake enables ASM,
+          #    picks cl.exe, and generate fails with "MSVC_RUNTIME_LIBRARY value
+          #    'MultiThreadedDLL' not known for this ASM compiler". ALL_BUILD is
+          #    a VS-generator target so ssl/crypto stay as upstream has them.
+          - variant: d-native-ninja-no-asm
             host: windows-11-arm
             node_arch: arm64
             generator: Ninja
-            patch: linksearch
+            patch: linksearch,earlyreturn
+            nasm: false
             smoke: true
 
     name: ${{ matrix.settings.variant }}
@@ -60,6 +66,10 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-pc-windows-msvc
+
+      - name: Setup NASM
+        if: matrix.settings.nasm
+        uses: ilammy/setup-nasm@v1
 
       - name: Install Ninja
         shell: pwsh
@@ -92,12 +102,12 @@ jobs:
             echo "Error: could not find btls-sys build/main.rs to patch"
             exit 1
           fi
-          echo "Patching $FILE (mode=$MODE)"
+          echo "Patching $FILE (flags=$MODE)"
 
           python3 - "$FILE" "$MODE" <<'PY'
           import io, sys
 
-          path, mode = sys.argv[1], sys.argv[2]
+          path, flags = sys.argv[1], sys.argv[2].split(",")
           src = io.open(path, encoding="utf-8").read()
 
           def sub(old, new, why):
@@ -118,7 +128,7 @@ jobs:
               "rustc-link-search for msvc",
           )
 
-          if mode != "linksearch":
+          if "allbuild" in flags:
               # The VS generator does not expose ssl/crypto as buildable targets
               # the way cmake-rs expects, so build everything at once instead.
               sub('cfg.build_target("ssl").build();',
@@ -128,7 +138,7 @@ jobs:
                   'cfg.build_target("ALL_BUILD").build()',
                   "crypto -> ALL_BUILD")
 
-          if mode == "base+earlyreturn":
+          if "earlyreturn" in flags:
               # get_boringssl_cmake_config() returns before the match arm that
               # sets OPENSSL_NO_ASM for Windows whenever host == target, so a
               # native arm64 build asks for assembly nothing can assemble.
