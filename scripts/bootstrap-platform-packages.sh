@@ -52,47 +52,41 @@ for dir in npm/*/; do
   echo "==> $name"
 
   if npm view "$name" version >/dev/null 2>&1; then
-    echo "    already on the registry, skipping placeholder publish"
-  else
-    # Publish from a copy so the working tree keeps the real version.
-    staging=$(mktemp -d)
-    cp "${dir}package.json" "$staging/"
-    if [[ -f "${dir}README.md" ]]; then
-      cp "${dir}README.md" "$staging/"
-    fi
-    (cd "$staging" && npm pkg set version="$PLACEHOLDER_VERSION" >/dev/null)
-    npm publish "$staging" --access public $DRY_RUN
-    rm -rf "$staging"
-    echo "    claimed at $PLACEHOLDER_VERSION"
+    # A name that exists was claimed by an earlier run of this script, which
+    # configured its trusted publisher in the same pass. There is no cheap way
+    # to re-verify that: `npm trust list` needs an OTP, and `npm trust github`
+    # on an already-configured package burns an interactive browser auth only
+    # to fail with 409 "trusted publisher config already exists". So leave
+    # existing names alone; this script is for claiming new ones.
+    #
+    # If a name was ever published by hand rather than by this script, it may
+    # be missing its trusted publisher. Fix that one with:
+    #   npm trust github <name> --file build.yml --repo sqdshguy/wreq-js \
+    #     --allow-publish --yes
+    echo "    already on the registry, leaving it alone"
+    continue
   fi
 
+  # Publish from a copy so the working tree keeps the real version.
+  staging=$(mktemp -d)
+  cp "${dir}package.json" "$staging/"
+  if [[ -f "${dir}README.md" ]]; then
+    cp "${dir}README.md" "$staging/"
+  fi
+  (cd "$staging" && npm pkg set version="$PLACEHOLDER_VERSION" >/dev/null)
+  npm publish "$staging" --access public $DRY_RUN
+  rm -rf "$staging"
+  echo "    claimed at $PLACEHOLDER_VERSION"
+
   if [[ -z "$DRY_RUN" ]]; then
-    # `npm trust list` needs an OTP, so on a fresh login it fails with EOTP and
-    # writes nothing to stdout. Guarding on its output therefore reported every
-    # already-configured package as unconfigured, and the npm trust github that
-    # followed died on 409 "trusted publisher config already exists" before the
-    # loop reached the package that actually needed claiming.
-    #
-    # Ask for the configuration and classify the failure instead, the same way
-    # the release workflow treats "cannot publish over" as success. tee keeps
-    # npm's interactive auth prompt visible while still capturing the text.
-    set +e
-    out=$(npm trust github "$name" \
+    # Deliberately not captured or piped. npm needs a TTY to run its browser
+    # auth flow; behind a pipe it cannot prompt and fails with EOTP instead.
+    npm trust github "$name" \
       --file "$WORKFLOW" \
       --repo "$REPO" \
       --allow-publish \
-      --yes 2>&1 | tee /dev/stderr)
-    rc=${PIPESTATUS[0]}
-    set -e
-
-    if [[ $rc -eq 0 ]]; then
-      echo "    trusted publisher configured"
-    elif [[ "$out" == *"already exists"* ]]; then
-      echo "    trusted publisher already configured, skipping"
-    else
-      echo "    failed to configure trusted publishing for $name" >&2
-      exit 1
-    fi
+      --yes
+    echo "    trusted publisher configured"
   fi
 
   # npm rate-limits back-to-back trust calls; the 2FA skip window covers these.
@@ -100,4 +94,5 @@ for dir in npm/*/; do
 done
 
 echo
-echo "Done. Verify with: npm trust list @wreq-js/binding-linux-x64-gnu"
+echo "Done. Verify on the web (npm trust list needs an OTP):"
+echo "  https://www.npmjs.com/package/@wreq-js/binding-win32-arm64-msvc/access"
