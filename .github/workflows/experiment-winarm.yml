@@ -1,0 +1,177 @@
+name: 🧪 Experiment - windows arm64 assembly
+
+# Round 3: get assembly back on aarch64-pc-windows-msvc.
+#
+# BoringSSL does ship arm64 Windows assembly -- gen/bcm/*-armv8-win.S, 12 of
+# them -- but they are gas syntax, not the NASM-syntax .asm that x64 Windows
+# uses. Its CMakeLists routes them through enable_language(ASM), which with a
+# Visual Studio toolchain nominates cl.exe and cannot assemble them:
+#
+#   if(WIN32 AND CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|x86_64|amd64|x86|i[3-6]86")
+#     enable_language(ASM_NASM)
+#   else()
+#     enable_language(ASM)
+#
+# Upstream BUILDING.md is explicit that the VS generator cannot build BoringSSL
+# at all with assembly ("the generated project files don't have steps for
+# assembling the assembly language source files"), so Ninja is the only
+# supported generator here. Bun assembles the same files with clang for
+# win-aarch64, so the combination is known to work in production.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        settings:
+          - variant: e1-clang-cl
+            asm_compiler: clang-cl
+            clear_runtime_asm: false
+          - variant: e2-clang-cl-no-runtime-asm
+            asm_compiler: clang-cl
+            clear_runtime_asm: true
+          - variant: e3-clang-no-runtime-asm
+            asm_compiler: clang
+            clear_runtime_asm: true
+
+    name: ${{ matrix.settings.variant }}
+    runs-on: windows-11-arm
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          architecture: arm64
+          cache: npm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-pc-windows-msvc
+
+      - name: Setup MSVC arm64 environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: arm64
+
+      - name: Show toolchain
+        shell: pwsh
+        run: |
+          ninja --version
+          (Get-Command clang-cl -ErrorAction SilentlyContinue).Source
+          (Get-Command clang -ErrorAction SilentlyContinue).Source
+          clang --version
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Patch btls-sys
+        shell: bash
+        env:
+          ASM_COMPILER: ${{ matrix.settings.asm_compiler }}
+          CLEAR_RUNTIME_ASM: ${{ matrix.settings.clear_runtime_asm }}
+        run: |
+          set -eux
+          cd rust
+          cargo fetch
+
+          FILE=$(find ~/.cargo/registry/src -name "main.rs" | grep "btls-sys" | grep "build")
+          test -n "$FILE" || { echo "btls-sys build/main.rs not found"; exit 1; }
+
+          python3 - "$FILE" "$ASM_COMPILER" "$CLEAR_RUNTIME_ASM" <<'PY'
+          import io, sys
+
+          path, asm_compiler, clear_runtime = sys.argv[1], sys.argv[2], sys.argv[3] == "true"
+          src = io.open(path, encoding="utf-8").read()
+
+          def sub(old, new, why):
+              global src
+              if src.count(old) != 1:
+                  sys.exit(f"expected 1 occurrence of {why}, found {src.count(old)}")
+              src = src.replace(old, new, 1)
+              print("applied:", why)
+
+          # MSVC drops static libs in a per-config subdir cmake-rs does not report.
+          sub(
+              "let bssl_dir = build_boringssl_or_get_prebuilt(config);",
+              'let bssl_dir = build_boringssl_or_get_prebuilt(config); '
+              'if config.target.ends_with("-msvc") { '
+              'println!("cargo:rustc-link-search=native={}/lib", bssl_dir.display()); }',
+              "rustc-link-search for msvc",
+          )
+
+          # Point the ASM language at clang before the host == target early
+          # return, so it lands on native builds too. Deliberately NOT setting
+          # OPENSSL_NO_ASM: the whole point is to keep the assembly.
+          extra = f'        boringssl_cmake.define("CMAKE_ASM_COMPILER", "{asm_compiler}");\n'
+          if clear_runtime:
+              # CMake only knows how to translate MSVC_RUNTIME_LIBRARY for
+              # languages it has a mapping for; ASM has none, which is what
+              # "value 'MultiThreadedDLL' not known for this ASM compiler"
+              # means. Blank the ASM mapping and leave C/CXX alone.
+              extra += (
+                  '        boringssl_cmake.define('
+                  '"CMAKE_ASM_COMPILE_OPTIONS_MSVC_RUNTIME_LIBRARY_MultiThreadedDLL", "");\n'
+              )
+
+          sub(
+              '            boringssl_cmake.define("CMAKE_MSVC_RUNTIME_LIBRARY", "MultiThreadedDLL");\n'
+              "        }\n"
+              "    }\n",
+              '            boringssl_cmake.define("CMAKE_MSVC_RUNTIME_LIBRARY", "MultiThreadedDLL");\n'
+              "        }\n"
+              "\n"
+              '        if config.target_arch == "aarch64" {\n'
+              + extra +
+              "        }\n"
+              "    }\n",
+              "clang as the ASM compiler on windows-arm64",
+          )
+
+          io.open(path, "w", encoding="utf-8").write(src)
+          PY
+
+      - name: Build native module
+        shell: pwsh
+        env:
+          RUST_BACKTRACE: "1"
+          CARGO_TERM_VERBOSE: "true"
+          CMAKE_GENERATOR: Ninja
+          CARGO_BUILD_TARGET: aarch64-pc-windows-msvc
+          CARGO_TARGET_DIR: rust/target
+          DEBUG: "false"
+          OPT_LEVEL: "3"
+          CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_OPT_LEVEL: 3
+          CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_DEBUG: "false"
+        run: npm run build:rust -- --target aarch64-pc-windows-msvc
+
+      - name: Confirm assembly actually got compiled
+        shell: bash
+        run: |
+          set -eux
+          # If OPENSSL_NO_ASM had crept back in, no armv8 objects would exist.
+          find rust/target -name "*armv8-win*" -o -name "*armv8*.obj" | head -20
+          echo "---"
+          find rust/target -name "*.obj" -path "*armv8*" | wc -l
+
+      - name: Show produced addon
+        shell: pwsh
+        run: Get-ChildItem rust/*.node | Format-List Name, Length
+
+      - name: Smoke test native addon
+        env:
+          WREQ_TARGET: aarch64-pc-windows-msvc
+        run: node scripts/smoke-native.cjs
+
+      - name: Upload addon
+        uses: actions/upload-artifact@v7
+        with:
+          name: probe-${{ matrix.settings.variant }}
+          path: rust/*.node
+          if-no-files-found: error
