@@ -1,0 +1,181 @@
+name: 🧪 Experiment - windows arm64
+
+# Throwaway probe for aarch64-pc-windows-msvc. Delete once a variant wins and
+# the recipe is folded into build.yml.
+#
+# btls-sys 0.5.6 build/main.rs bails out of get_boringssl_cmake_config() early
+# when host == target, before the match arm that sets OPENSSL_NO_ASM for
+# Windows. A native arm64 build therefore asks BoringSSL for assembly it has no
+# assembler for, and crypto.vcxproj dies on LNK1181 looking for objects like
+# aes-gcm-avx2-x86_64-apple.obj. x64 gets away with it because we install NASM.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        settings:
+          # A: cross from an x64 host. host != target, so btls-sys takes its
+          #    supported Windows cross path and sets OPENSSL_NO_ASM=YES itself.
+          - variant: a-cross-from-x64
+            host: windows-2022
+            node_arch: x64
+            generator: Visual Studio 17 2022
+            patch: base
+            smoke: false
+          # B: stay native, patch out the host == target early return so the
+          #    OPENSSL_NO_ASM arm is reached.
+          - variant: b-native-no-asm
+            host: windows-11-arm
+            node_arch: arm64
+            generator: Visual Studio 17 2022
+            patch: base+earlyreturn
+            smoke: true
+          # C: stay native, swap the generator. ALL_BUILD is a VS-generator
+          #    target, so the base patch does not apply here.
+          - variant: c-native-ninja
+            host: windows-11-arm
+            node_arch: arm64
+            generator: Ninja
+            patch: linksearch
+            smoke: true
+
+    name: ${{ matrix.settings.variant }}
+    runs-on: ${{ matrix.settings.host }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          architecture: ${{ matrix.settings.node_arch }}
+          cache: npm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-pc-windows-msvc
+
+      - name: Install Ninja
+        shell: pwsh
+        run: |
+          if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) {
+            choco install ninja -y
+          }
+          ninja --version
+
+      - name: Setup MSVC arm64 environment (Ninja needs cl.exe on PATH)
+        if: matrix.settings.generator == 'Ninja'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: arm64
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Patch btls-sys
+        shell: bash
+        env:
+          MODE: ${{ matrix.settings.patch }}
+        run: |
+          set -eux
+          cd rust
+          cargo fetch
+
+          FILE=$(find ~/.cargo/registry/src -name "main.rs" | grep "btls-sys" | grep "build")
+          if [ -z "$FILE" ]; then
+            echo "Error: could not find btls-sys build/main.rs to patch"
+            exit 1
+          fi
+          echo "Patching $FILE (mode=$MODE)"
+
+          python3 - "$FILE" "$MODE" <<'PY'
+          import io, sys
+
+          path, mode = sys.argv[1], sys.argv[2]
+          src = io.open(path, encoding="utf-8").read()
+
+          def sub(old, new, why):
+              global src
+              n = src.count(old)
+              if n != 1:
+                  sys.exit(f"expected 1 occurrence of {why}, found {n} -- upstream build script changed")
+              src = src.replace(old, new, 1)
+              print(f"applied: {why}")
+
+          # Every mode wants the link-search fix; MSVC drops static libs in a
+          # per-config subdir that cmake-rs does not report back.
+          sub(
+              "let bssl_dir = build_boringssl_or_get_prebuilt(config);",
+              'let bssl_dir = build_boringssl_or_get_prebuilt(config); '
+              'if config.target.ends_with("-msvc") { '
+              'println!("cargo:rustc-link-search=native={}/lib", bssl_dir.display()); }',
+              "rustc-link-search for msvc",
+          )
+
+          if mode != "linksearch":
+              # The VS generator does not expose ssl/crypto as buildable targets
+              # the way cmake-rs expects, so build everything at once instead.
+              sub('cfg.build_target("ssl").build();',
+                  '// cfg.build_target("ssl").build();',
+                  "drop the ssl build_target")
+              sub('cfg.build_target("crypto").build()',
+                  'cfg.build_target("ALL_BUILD").build()',
+                  "crypto -> ALL_BUILD")
+
+          if mode == "base+earlyreturn":
+              # get_boringssl_cmake_config() returns before the match arm that
+              # sets OPENSSL_NO_ASM for Windows whenever host == target, so a
+              # native arm64 build asks for assembly nothing can assemble.
+              # Only the early return inside that function is touched; the
+              # identical condition in should_use_cmake_cross_compilation must
+              # keep returning false so a native build stays native.
+              sub(
+                  "    if config.host == config.target {\n        return boringssl_cmake;\n    }",
+                  '    if config.host == config.target\n'
+                  '        && !(config.target_os == "windows" && config.target_arch == "aarch64")\n'
+                  "    {\n        return boringssl_cmake;\n    }",
+                  "windows-arm64 falls through to OPENSSL_NO_ASM",
+              )
+
+          io.open(path, "w", encoding="utf-8").write(src)
+          PY
+
+          echo "--- resulting call sites ---"
+          grep -n 'build_target\|config.host == config.target\|rustc-link-search' "$FILE" || true
+
+      - name: Build native module
+        shell: pwsh
+        env:
+          RUST_BACKTRACE: "1"
+          CARGO_TERM_VERBOSE: "true"
+          CMAKE_GENERATOR: ${{ matrix.settings.generator }}
+          CARGO_BUILD_TARGET: aarch64-pc-windows-msvc
+          CARGO_TARGET_DIR: rust/target
+          DEBUG: "false"
+          OPT_LEVEL: "3"
+          CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_OPT_LEVEL: 3
+          CARGO_PROFILE_RELEASE_BUILD_OVERRIDE_DEBUG: "false"
+        run: npm run build:rust -- --target aarch64-pc-windows-msvc
+
+      - name: Show produced addon
+        shell: pwsh
+        run: Get-ChildItem rust/*.node | Format-List Name, Length
+
+      - name: Smoke test native addon
+        if: matrix.settings.smoke
+        env:
+          WREQ_TARGET: aarch64-pc-windows-msvc
+        run: node scripts/smoke-native.cjs
+
+      - name: Upload addon
+        uses: actions/upload-artifact@v7
+        with:
+          name: probe-${{ matrix.settings.variant }}
+          path: rust/*.node
+          if-no-files-found: error
