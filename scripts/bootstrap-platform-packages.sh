@@ -74,7 +74,27 @@ for dir in npm/*/; do
     cp "${dir}README.md" "$staging/"
   fi
   (cd "$staging" && npm pkg set version="$PLACEHOLDER_VERSION" >/dev/null)
-  npm publish "$staging" --access public $DRY_RUN
+
+  # The guard above reads the registry through npm, which can lag a publish by
+  # minutes on a cold CDN edge. A second run started inside that window sees the
+  # name as missing, tries to claim it again, and npm answers
+  #
+  #   npm error 403 You cannot publish over the previously published versions: 0.0.0.
+  #
+  # which under `set -e` kills the run before any remaining name is reached.
+  # Re-ask the registry instead: a name that is there now was claimed by the run
+  # that raced us, and the publish below is the only thing that needed doing.
+  # Deliberately not captured, so npm keeps its TTY.
+  if ! npm publish "$staging" --access public $DRY_RUN; then
+    if npm view "$name" version --prefer-online >/dev/null 2>&1; then
+      echo "    already claimed by an earlier run, continuing"
+      rm -rf "$staging"
+      continue
+    fi
+    rm -rf "$staging"
+    exit 1
+  fi
+
   rm -rf "$staging"
   echo "    claimed at $PLACEHOLDER_VERSION"
 
