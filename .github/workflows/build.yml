@@ -312,11 +312,14 @@ jobs:
               . "$HOME/.cargo/env"
               rustc --version
 
-              # Alpine is a native musl host, but rustc's built-in spec for the
-              # musl targets names a cross compiler as the linker, so a toolchain
-              # from rustup looks for aarch64-linux-musl-gcc and finds nothing.
-              # Alpine's own rust package patches that to plain gcc; point at it
-              # ourselves now that we no longer use theirs.
+              # Alpine is a native musl host, but the built-in rustc spec for
+              # the musl targets names a cross compiler as the linker, so a
+              # toolchain from rustup looks for aarch64-linux-musl-gcc and finds
+              # nothing. The rust package Alpine ships patches that to plain gcc;
+              # point at it here now that we no longer use theirs.
+              #
+              # Keep apostrophes out of this block: the whole script is a single
+              # quoted argument to sh -lc, and one ends it early.
               export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=gcc
 
               # The addon is a cdylib that Node dlopens, so it cannot be linked
