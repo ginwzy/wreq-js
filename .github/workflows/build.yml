@@ -301,7 +301,16 @@ jobs:
             node:20-alpine \
             sh -lc '
               set -eux
-              apk add --no-cache rust cargo build-base python3 cmake git clang-dev
+              # Alpine packages Rust well behind our MSRV (1.91 against the 1.98
+              # wreq needs), and this is the only target that took its toolchain
+              # from the distro rather than from rustup, so it was the only one
+              # that broke on the upgrade. Install the toolchain the same way the
+              # manylinux containers below already do.
+              apk add --no-cache build-base python3 cmake git clang-dev curl
+              curl --proto =https --tlsv1.2 -sSf https://sh.rustup.rs \
+                | sh -s -- -y --default-toolchain stable --profile minimal
+              . "$HOME/.cargo/env"
+              rustc --version
               npm ci --ignore-scripts
               npm run build:rust
             '
