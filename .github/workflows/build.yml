@@ -245,6 +245,14 @@ jobs:
           path = sys.argv[1]
           src = io.open(path, encoding="utf-8").read()
 
+          # Swatinem/rust-cache caches ~/.cargo/registry per target, so a cache
+          # hit restores a registry this step already patched on an earlier run.
+          # That is a no-op, not the upstream change the count check below is
+          # meant to catch, and failing on it breaks every run after the first.
+          if 'CMAKE_ASM_COMPILER", "clang-cl"' in src:
+              print("already patched, from a restored cargo registry")
+              raise SystemExit(0)
+
           old = (
               '            boringssl_cmake.define("CMAKE_MSVC_RUNTIME_LIBRARY", "MultiThreadedDLL");\n'
               "        }\n"
