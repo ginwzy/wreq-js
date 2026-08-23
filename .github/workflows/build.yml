@@ -311,6 +311,19 @@ jobs:
                 | sh -s -- -y --default-toolchain stable --profile minimal
               . "$HOME/.cargo/env"
               rustc --version
+
+              # Alpine is a native musl host, but rustc's built-in spec for the
+              # musl targets names a cross compiler as the linker, so a toolchain
+              # from rustup looks for aarch64-linux-musl-gcc and finds nothing.
+              # Alpine's own rust package patches that to plain gcc; point at it
+              # ourselves now that we no longer use theirs.
+              export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=gcc
+
+              # The addon is a cdylib that Node dlopens, so it cannot be linked
+              # against a static crt. The x86_64 musl job disables it for the
+              # same reason.
+              export RUSTFLAGS="-C target-feature=-crt-static"
+
               npm ci --ignore-scripts
               npm run build:rust
             '
