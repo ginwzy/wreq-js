@@ -56,9 +56,11 @@
       "automerge": false
     },
     {
-      "description": "Special logic for wreq. Track pre-releases and automerge if tests pass.",
+      "description": "Special logic for wreq. Track pre-releases and automerge if tests pass. In Aug 2026 upstream renumbered both crates downward (wreq 6.0.0-rc.31 -> 0.16.0, wreq-util 3.0.0-rc.14 -> 0.2.0), so crates.io still reports the abandoned rc line as max_version. allowedVersions keeps us on the current 0.x line instead of being dragged back. See https://github.com/0x676e67/wreq/issues/1254",
       "matchManagers": ["cargo"],
       "matchPackageNames": ["wreq", "wreq-util"],
+      "groupName": "wreq",
+      "allowedVersions": "/^0\\./",
       "ignoreUnstable": false,
       "respectLatest": false,
       "automerge": true,
