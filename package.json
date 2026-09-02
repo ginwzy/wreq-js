@@ -106,15 +106,15 @@
     "access": "public"
   },
   "optionalDependencies": {
-    "@zionsssx/freq-js-darwin-x64": "0.1.3",
-    "@zionsssx/freq-js-darwin-arm64": "0.1.3",
-    "@zionsssx/freq-js-linux-x64-gnu": "0.1.3",
-    "@zionsssx/freq-js-linux-arm64-gnu": "0.1.3",
-    "@zionsssx/freq-js-linux-x64-musl": "0.1.3",
-    "@zionsssx/freq-js-linux-arm64-musl": "0.1.3",
-    "@zionsssx/freq-js-win32-x64-msvc": "0.1.3",
-    "@zionsssx/freq-js-win32-arm64-msvc": "0.1.3",
-    "@zionsssx/freq-js-android-arm64": "0.1.3"
+    "@zionsssx/freq-js-darwin-x64": "0.0.0",
+    "@zionsssx/freq-js-darwin-arm64": "0.0.0",
+    "@zionsssx/freq-js-linux-x64-gnu": "0.0.0",
+    "@zionsssx/freq-js-linux-arm64-gnu": "0.0.0",
+    "@zionsssx/freq-js-linux-x64-musl": "0.0.0",
+    "@zionsssx/freq-js-linux-arm64-musl": "0.0.0",
+    "@zionsssx/freq-js-win32-x64-msvc": "0.0.0",
+    "@zionsssx/freq-js-win32-arm64-msvc": "0.0.0",
+    "@zionsssx/freq-js-android-arm64": "0.0.0"
   },
   "napi": {
     "binaryName": "freq-js",
