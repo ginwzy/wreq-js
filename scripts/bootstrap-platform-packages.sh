@@ -5,7 +5,7 @@
 # npm cannot configure a trusted publisher for a package that does not exist
 # yet ("Package must exist" — https://docs.npmjs.com/cli/v12/commands/npm-trust),
 # so the release workflow's OIDC publish has nothing to authenticate against
-# until each name has been claimed once. This script claims all eight names
+# until each name has been claimed once. This script claims all nine names
 # with an empty 0.0.0 placeholder and then points them at the release workflow.
 #
 # Run it once, locally, from a logged-in npm account with 2FA enabled. Every
