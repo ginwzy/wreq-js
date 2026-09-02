@@ -10,45 +10,47 @@ crate-type = ["cdylib"]
 
 [dependencies]
 # HTTP client with browser impersonation
-wreq = { version = "6.0.0-rc.28", default-features = false, features = ["cookies", "gzip", "brotli", "deflate", "zstd", "charset", "system-proxy", "socks", "ws", "stream", "webpki-roots"] }
-wreq-util = { version = "3.0.0-rc.10", features = ["emulation-serde", "emulation-rand"] }
-webpki-root-certs = "1.0.6"
+wreq = { version = "0.16.1", default-features = false, features = ["cookies", "gzip", "brotli", "deflate", "zstd", "charset", "system-proxy", "socks", "ws", "stream", "webpki-roots", "tokio-rt"] }
+wreq-util = { version = "0.2.0", features = ["emulation-serde", "tokio-rt", "emulation-compression"] }
+webpki-root-certs = "1.0.9"
 
 # WebSocket support
-futures-util = "0.3.32"
+futures-util = "0.3.34"
 
 # Byte buffers for streaming bodies
-bytes = "1.11.1"
+bytes = "1.12.1"
+
+# Cookie construction for Session.setCookies (must track wreq's cookie dependency)
+cookie = "0.18.2"
 
 # Neon for Node.js bindings
 neon = { version = "1.1.1", default-features = false, features = ["napi-6"] }
 
 # Concurrent maps
-dashmap = "6.1.0"
+dashmap = "6.2.1"
 
 # Serialization
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 
 # Error handling
-anyhow = "1.0.102"
+anyhow = "1.0.104"
 
 # Async runtime
-tokio = { version = "1.50.0", features = ["rt-multi-thread", "sync", "macros"] }
-tokio-util = "0.7.18"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "sync", "macros"] }
+tokio-util = "0.7.19"
 
 # Global state management
-moka = { version = "0.12.15", features = ["sync"] }
-uuid = { version = "1.23.0", features = ["v4"] }
+moka = { version = "0.12.16", features = ["sync"] }
+uuid = { version = "1.23.4", features = ["v4"] }
 
 [build-dependencies]
-serde = { version = "1.0.228", features = ["derive"] }
-serde_json = "1.0.149"
-strum = "0.27.2"
-wreq-util = { version = "3.0.0-rc.10", features = ["emulation-serde", "emulation-rand"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+wreq-util = { version = "0.2.0", features = ["emulation-serde", "tokio-rt", "emulation-compression"] }
 
 [dev-dependencies]
-boring2 = "5.0.0-alpha.12"
+btls = "0.5.6"
 
 [profile.release]
 opt-level = 3

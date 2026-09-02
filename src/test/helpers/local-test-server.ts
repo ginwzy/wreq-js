@@ -287,6 +287,21 @@ export async function startLocalTestServer(): Promise<LocalTestServer> {
       });
     }
 
+    if (path === "/echo-body") {
+      const chunks: Buffer[] = [];
+
+      for await (const chunk of req) {
+        chunks.push(chunk as Buffer);
+      }
+
+      const received = Buffer.concat(chunks);
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "application/octet-stream");
+      res.setHeader("Content-Length", received.length);
+      res.end(received);
+      return;
+    }
+
     if (path === "/binary") {
       const lengthParam = url.searchParams.get("len");
       const length =

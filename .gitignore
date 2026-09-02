@@ -3,6 +3,7 @@ node_modules/
 
 # Build outputs
 dist/
+artifacts/
 rust/target/
 rust/bench-server/target/
 rust/wreq-js.node
@@ -39,5 +40,6 @@ tmp/
 # Agents
 .claude/
 .omx/
+.agents/
 AGENTS.md
 CPU.*.cpuprofile

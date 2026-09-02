@@ -45,6 +45,10 @@ function createSession(options?: CreateSessionOptions): Promise<Session>
   Accept invalid certificates for all session requests. **Use only in development.**
 </ParamField>
 
+<ParamField path="captureDiagnostics" type="boolean" default="false">
+  Enable extra connection and TLS diagnostics for requests made through this session by default.
+</ParamField>
+
 ### Session object
 
 The returned `Session` object has:
@@ -61,6 +65,8 @@ const response = await session.fetch('https://example.com/api', {
 ```
 
 Per-request options override session defaults.
+
+`session.fetch()` also accepts request-scoped `onRequestEvent` and `captureDiagnostics` options from [`fetch()`](/api-reference/fetch). When diagnostics are enabled, inspect `response.diagnostics` on the returned response.
 
 #### session.websocket(url, options?)
 
@@ -103,6 +109,26 @@ const cookies: Record<string, string> = session.getCookies('https://example.com'
 
 **Returns** `Record<string, string>` — cookie name/value pairs.
 
+#### session.getAllCookies()
+
+Return every cookie currently stored in the session jar, regardless of URL matching.
+
+```typescript
+const cookies = session.getAllCookies();
+// [
+//   {
+//     name: 'session_id',
+//     value: 'abc123',
+//     secure: true,
+//     httpOnly: true,
+//     domain: 'example.com',
+//     path: '/',
+//   },
+// ]
+```
+
+**Returns** `SessionCookie[]` — all cookies in the jar, with scope metadata such as `domain`, `path`, `sameSite`, and `expiresAtMs` when available.
+
 #### session.setCookie(name, value, url)
 
 Add a cookie to the session jar, scoped to the domain/path of the given URL.
@@ -122,6 +148,42 @@ session.setCookie('token', 'abc123', 'https://example.com');
 <ParamField path="url" type="string | URL" required>
   URL that determines the cookie's domain and path scope.
 </ParamField>
+
+#### session.setCookies(cookies, url?)
+
+Restore a batch of cookies into the session jar, keeping every attribute. Accepts the output of
+[`getAllCookies()`](#session-getallcookies) directly, so a jar can round-trip through JSON.
+
+```typescript
+// Export
+fs.writeFileSync('cookies.json', JSON.stringify(session.getAllCookies()));
+
+// Import, in another process
+const restored = await createSession({ browser: 'chrome' });
+restored.setCookies(JSON.parse(fs.readFileSync('cookies.json', 'utf8')), 'https://example.com');
+```
+
+<ParamField path="cookies" type="SessionCookieInit[]" required>
+  Cookies to store. Only `name` and `value` are required; `domain`, `path`, `secure`, `httpOnly`,
+  `sameSite`, and `expiresAtMs` are applied when present.
+</ParamField>
+
+<ParamField path="url" type="string | URL">
+  Origin used to scope host-only cookies — those without a `domain`. Required whenever the batch
+  contains one, unless the cookie carries its own `url`.
+</ParamField>
+
+<Note>
+  A cookie with a `domain` describes its own scope. A cookie without one is host-only, and the jar
+  keeps that host as an internal key it never returns, so it is missing from the export. `url`
+  supplies it — which means a jar holding host-only cookies from **several** hosts cannot be
+  restored from a single `url`: they would all land on that one host. Set `url` on the individual
+  cookie to place each one precisely.
+</Note>
+
+The batch is validated before anything is stored, so a rejected cookie leaves the jar untouched
+instead of applying half the restore. Cookies whose `expiresAtMs` is already in the past are
+dropped rather than stored, matching how the jar treats an expired `Set-Cookie`.
 
 #### session.clearCookies()
 

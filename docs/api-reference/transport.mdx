@@ -25,8 +25,9 @@ function createTransport(options?: CreateTransportOptions): Promise<Transport>
   Proxy URL for all requests made through this transport. Support depends on the native layer and proxy scheme.
 </ParamField>
 
-<ParamField path="browser" type="BrowserProfile" default="chrome_142">
-  Browser fingerprint profile to use for this transport.
+<ParamField path="browser" type="BrowserProfile | BrowserAlias" default="chrome">
+  Browser fingerprint profile to use for this transport, or a family alias such as
+  `'firefox'` that resolves to the newest profile in that family.
 </ParamField>
 
 <ParamField path="os" type="EmulationOS" default="macos">
@@ -57,6 +58,10 @@ function createTransport(options?: CreateTransportOptions): Promise<Transport>
   Read timeout (ms).
 </ParamField>
 
+<ParamField path="captureDiagnostics" type="boolean" default="false">
+  Enable extra connection and TLS diagnostics for requests made through this transport by default.
+</ParamField>
+
 ## Using a transport with fetch()
 
 Pass the transport via `RequestInit.transport`.
@@ -81,6 +86,8 @@ try {
   await transport.close();
 }
 ```
+
+You can still pass per-request `onRequestEvent` callbacks when using a transport. If `captureDiagnostics` is enabled on the transport, returned responses expose `response.diagnostics` without having to repeat the flag on every request.
 
 ### Important: request options that become invalid
 

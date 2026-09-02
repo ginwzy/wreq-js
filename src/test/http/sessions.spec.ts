@@ -1,6 +1,6 @@
 import assert from "node:assert";
 import { describe, test } from "node:test";
-import type { Session } from "../../wreq-js.js";
+import type { Session, SessionCookie } from "../../wreq-js.js";
 import { createSession, RequestError, withSession, fetch as wreqFetch } from "../../wreq-js.js";
 import { httpUrl } from "../helpers/http.js";
 
@@ -81,6 +81,203 @@ describe("HTTP sessions", () => {
       },
       (error: unknown) => error instanceof RequestError && /Session has been closed/.test(error.message),
     );
+
+    assert.throws(
+      () => {
+        session.getAllCookies();
+      },
+      (error: unknown) => error instanceof RequestError && /Session has been closed/.test(error.message),
+    );
+
+    assert.throws(
+      () => {
+        session.setCookies([{ name: "k", value: "v", url: httpUrl("/cookies") }]);
+      },
+      (error: unknown) => error instanceof RequestError && /Session has been closed/.test(error.message),
+    );
+  });
+
+  test("getAllCookies returns cookies without needing a URL", async () => {
+    const session = await createSession({ browser: "chrome_142" });
+
+    try {
+      session.setCookie("root", "alpha", httpUrl("/"));
+      session.setCookie("nested", "beta", httpUrl("/account/settings"));
+
+      const cookies = session.getAllCookies().sort((left, right) => left.name.localeCompare(right.name));
+
+      assert.strictEqual(cookies.length, 2);
+      assert.deepStrictEqual(
+        cookies.map((cookie) => ({
+          name: cookie.name,
+          value: cookie.value,
+          secure: cookie.secure,
+          httpOnly: cookie.httpOnly,
+        })),
+        [
+          { name: "nested", value: "beta", secure: false, httpOnly: false },
+          { name: "root", value: "alpha", secure: false, httpOnly: false },
+        ],
+      );
+    } finally {
+      await session.close();
+    }
+  });
+
+  test("getAllCookies preserves duplicate cookie names across different paths", async () => {
+    const session = await createSession({ browser: "chrome_142" });
+
+    try {
+      session.setCookie("token", "root", httpUrl("/"));
+      session.setCookie("token", "admin", httpUrl("/admin/panel"));
+
+      const cookies = session
+        .getAllCookies()
+        .filter((cookie) => cookie.name === "token")
+        .sort((left, right) => left.value.localeCompare(right.value));
+
+      assert.deepStrictEqual(
+        cookies.map((cookie) => ({
+          name: cookie.name,
+          value: cookie.value,
+          secure: cookie.secure,
+          httpOnly: cookie.httpOnly,
+        })),
+        [
+          { name: "token", value: "admin", secure: false, httpOnly: false },
+          { name: "token", value: "root", secure: false, httpOnly: false },
+        ],
+      );
+    } finally {
+      await session.close();
+    }
+  });
+
+  test("getAllCookies reports every SameSite value", async () => {
+    const session = await createSession({ browser: "chrome_142" });
+
+    try {
+      session.setCookies(
+        [
+          { name: "lax", value: "1", sameSite: "lax" },
+          { name: "strict", value: "1", sameSite: "strict" },
+          // SameSite=None is the case wreq's cookie wrapper cannot tell from an absent attribute.
+          { name: "none", value: "1", sameSite: "none", secure: true },
+          { name: "unset", value: "1" },
+        ],
+        httpUrl("/"),
+      );
+
+      const bySameSite = Object.fromEntries(session.getAllCookies().map((cookie) => [cookie.name, cookie.sameSite]));
+
+      assert.deepStrictEqual(bySameSite, {
+        lax: "lax",
+        strict: "strict",
+        none: "none",
+        unset: undefined,
+      });
+    } finally {
+      await session.close();
+    }
+  });
+
+  test("setCookies restores an exported jar with every attribute", async () => {
+    const source = await createSession({ browser: "chrome_142" });
+    const target = await createSession({ browser: "chrome_142" });
+
+    try {
+      source.setCookie("token", "abc123", httpUrl("/"));
+      source.setCookie("scoped", "nested", httpUrl("/account/settings"));
+      source.setCookie(
+        "flagged",
+        "on; Domain=127.0.0.1; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=3600",
+        "https://127.0.0.1/",
+      );
+
+      const exported = source.getAllCookies();
+      assert.strictEqual(exported.length, 3);
+
+      // Cross a JSON round-trip the way a caller persisting a jar to disk would.
+      target.setCookies(JSON.parse(JSON.stringify(exported)), httpUrl("/"));
+
+      const byName = (cookies: SessionCookie[]) => [...cookies].sort((a, b) => a.name.localeCompare(b.name));
+      assert.deepStrictEqual(byName(target.getAllCookies()), byName(exported));
+
+      const response = await target.fetch(httpUrl("/cookies"), { timeout: 10_000 });
+      const body = await response.json<{ cookies: Record<string, string> }>();
+      assert.strictEqual(body.cookies.token, "abc123");
+    } finally {
+      await source.close();
+      await target.close();
+    }
+  });
+
+  test("setCookies scopes host-only cookies per cookie url", async () => {
+    const session = await createSession({ browser: "chrome_142" });
+
+    try {
+      session.setCookies([
+        { name: "here", value: "local", url: httpUrl("/") },
+        { name: "elsewhere", value: "remote", url: "https://example.com/" },
+      ]);
+
+      assert.deepStrictEqual(session.getCookies(httpUrl("/")), { here: "local" });
+      assert.deepStrictEqual(session.getCookies("https://example.com/"), { elsewhere: "remote" });
+    } finally {
+      await session.close();
+    }
+  });
+
+  test("setCookies rejects a bad batch without touching the jar", async () => {
+    const session = await createSession({ browser: "chrome_142" });
+
+    try {
+      session.setCookie("keep", "me", httpUrl("/"));
+
+      assert.throws(
+        () => {
+          session.setCookies([{ name: "stray", value: "1" }]);
+        },
+        (error: unknown) => error instanceof RequestError && /has no domain/.test(error.message),
+        "Host-only cookies need a URL to scope them",
+      );
+
+      assert.throws(
+        () => {
+          session.setCookies([
+            { name: "good", value: "1", domain: "127.0.0.1" },
+            { name: "bad", value: "1", domain: "127.0.0.1", sameSite: "sometimes" as never },
+          ]);
+        },
+        (error: unknown) => error instanceof RequestError && /invalid sameSite/.test(error.message),
+      );
+
+      assert.deepStrictEqual(
+        session.getCookies(httpUrl("/")),
+        { keep: "me" },
+        "A rejected batch should leave the jar untouched",
+      );
+    } finally {
+      await session.close();
+    }
+  });
+
+  test("setCookies drops cookies that have already expired", async () => {
+    const session = await createSession({ browser: "chrome_142" });
+
+    try {
+      session.setCookies(
+        [
+          { name: "fresh", value: "1", expiresAtMs: Date.now() + 3_600_000 },
+          { name: "stale", value: "1", expiresAtMs: Date.now() - 60_000 },
+        ],
+        httpUrl("/"),
+      );
+
+      assert.deepStrictEqual(session.getCookies(httpUrl("/")), { fresh: "1" });
+    } finally {
+      await session.close();
+    }
   });
 
   test("isolates cookies for default fetch calls", async () => {

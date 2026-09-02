@@ -5,11 +5,12 @@ mod websocket;
 
 use anyhow::anyhow;
 use client::{
-    HTTP_RUNTIME, RedirectMode, RequestOptions, Response, clear_managed_session,
-    create_managed_session, create_managed_transport, drop_body_stream, drop_managed_session,
-    drop_managed_transport, generate_session_id, get_session_cookies, make_request,
+    HTTP_RUNTIME, RedirectMode, RequestEvent, RequestOptions, Response, SessionCookieInput,
+    TrustStoreMode, clear_managed_session, create_managed_session, create_managed_transport,
+    drop_body_stream, drop_managed_session, drop_managed_transport, generate_session_id,
+    get_all_session_cookies, get_session_cookies, make_request,
     read_body_all as native_read_body_all, read_body_chunk as native_read_body_chunk,
-    set_session_cookie, TrustStoreMode,
+    set_session_cookie, set_session_cookies,
 };
 use dashmap::DashMap;
 use futures_util::StreamExt;
@@ -19,6 +20,7 @@ use neon::types::{
     buffer::TypedArray,
 };
 use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::LazyLock;
 use tokio::sync::{Semaphore, mpsc};
@@ -28,20 +30,20 @@ use websocket::{
     connect_websocket_with_session, get_connection, remove_connection, store_connection,
 };
 use wreq::ws::message::Message;
-use wreq_util::{Emulation, EmulationOS};
+use wreq_util::{Platform, Profile};
 
 const WS_EVENT_BUFFER: usize = 64;
 static REQUEST_CANCELLATIONS: LazyLock<DashMap<u64, CancellationToken>> =
     LazyLock::new(DashMap::new);
 
-// Parse browser string to Emulation enum using serde
-fn parse_emulation(browser: &str) -> Emulation {
-    static EMULATION_CACHE: LazyLock<HashMap<&'static str, Emulation>> = LazyLock::new(|| {
+// Parse browser string to Profile enum using serde
+fn parse_emulation(browser: &str) -> Profile {
+    static EMULATION_CACHE: LazyLock<HashMap<&'static str, Profile>> = LazyLock::new(|| {
         generated_profiles::BROWSER_PROFILES
             .iter()
             .filter_map(|label| {
                 // Populate cache once up-front; failures fall back to the default below.
-                serde_json::from_value::<Emulation>(serde_json::Value::String((*label).to_string()))
+                serde_json::from_value::<Profile>(serde_json::Value::String((*label).to_string()))
                     .ok()
                     .map(|emulation| (*label, emulation))
             })
@@ -51,24 +53,22 @@ fn parse_emulation(browser: &str) -> Emulation {
     EMULATION_CACHE
         .get(browser)
         .cloned()
-        .unwrap_or(Emulation::Chrome142)
+        .unwrap_or(Profile::Chrome142)
 }
 
-fn parse_emulation_os(os: &str) -> EmulationOS {
-    static OS_CACHE: LazyLock<HashMap<&'static str, EmulationOS>> = LazyLock::new(|| {
+fn parse_emulation_os(os: &str) -> Platform {
+    static OS_CACHE: LazyLock<HashMap<&'static str, Platform>> = LazyLock::new(|| {
         generated_profiles::OPERATING_SYSTEMS
             .iter()
             .filter_map(|label| {
-                serde_json::from_value::<EmulationOS>(serde_json::Value::String(
-                    (*label).to_string(),
-                ))
-                .ok()
-                .map(|emulation_os| (*label, emulation_os))
+                serde_json::from_value::<Platform>(serde_json::Value::String((*label).to_string()))
+                    .ok()
+                    .map(|emulation_os| (*label, emulation_os))
             })
             .collect()
     });
 
-    OS_CACHE.get(os).cloned().unwrap_or(EmulationOS::MacOS)
+    OS_CACHE.get(os).cloned().unwrap_or(Platform::MacOS)
 }
 
 fn parse_trust_store_mode(value: &str) -> TrustStoreMode {
@@ -162,10 +162,86 @@ fn parse_headers_from_value(
     cx.throw_type_error("headers must be an array or object")
 }
 
+fn parse_socket_addr(value: &str) -> Option<SocketAddr> {
+    if let Ok(addr) = value.parse::<SocketAddr>() {
+        return Some(addr);
+    }
+
+    // The port is ignored by wreq (the request URL's port is used), so a bare IP
+    // address is accepted and paired with a placeholder port.
+    value
+        .parse::<IpAddr>()
+        .ok()
+        .map(|ip| SocketAddr::new(ip, 0))
+}
+
+fn parse_resolve_from_object(
+    cx: &mut FunctionContext,
+    obj: Handle<JsObject>,
+) -> NeonResult<Vec<(String, Vec<SocketAddr>)>> {
+    let keys = obj.get_own_property_names(cx)?;
+    let keys_vec = keys.to_vec(cx)?;
+    let mut entries = Vec::with_capacity(keys_vec.len());
+
+    for key_val in keys_vec {
+        let Ok(key_str) = key_val.downcast::<JsString, _>(cx) else {
+            continue;
+        };
+        let host = key_str.value(cx);
+        let value: Handle<JsValue> = obj.get(cx, host.as_str())?;
+
+        let raw_values = if let Ok(array) = value.downcast::<JsArray, _>(cx) {
+            array.to_vec(cx)?
+        } else if value.is_a::<JsString, _>(cx) {
+            vec![value]
+        } else {
+            return cx.throw_type_error("resolve values must be a string or array of strings");
+        };
+
+        let mut addrs = Vec::with_capacity(raw_values.len());
+        for raw in raw_values {
+            let Ok(addr_str) = raw.downcast::<JsString, _>(cx) else {
+                return cx.throw_type_error("resolve addresses must be strings");
+            };
+            match parse_socket_addr(&addr_str.value(cx)) {
+                Some(addr) => addrs.push(addr),
+                None => {
+                    return cx
+                        .throw_type_error(format!("Invalid resolve address for host '{}'", host));
+                }
+            }
+        }
+
+        if !addrs.is_empty() {
+            entries.push((host, addrs));
+        }
+    }
+
+    Ok(entries)
+}
+
+fn parse_resolve_opt(
+    cx: &mut FunctionContext,
+    obj: Handle<JsObject>,
+    key: &str,
+) -> NeonResult<Vec<(String, Vec<SocketAddr>)>> {
+    let Some(value) = obj.get_opt::<JsValue, _, _>(cx, key)? else {
+        return Ok(Vec::new());
+    };
+
+    if value.is_a::<JsUndefined, _>(cx) || value.is_a::<JsNull, _>(cx) {
+        return Ok(Vec::new());
+    }
+
+    let resolve_obj = value.downcast_or_throw::<JsObject, _>(cx)?;
+    parse_resolve_from_object(cx, resolve_obj)
+}
+
 // Convert JS object to RequestOptions
 fn js_object_to_request_options(
     cx: &mut FunctionContext,
     obj: Handle<JsObject>,
+    event_sink: Option<client::RequestEventSink>,
 ) -> NeonResult<RequestOptions> {
     // Get URL (required)
     let url: Handle<JsString> = obj.get(cx, "url")?;
@@ -293,6 +369,12 @@ fn js_object_to_request_options(
         .map(|v| v.value(cx))
         .filter(|v| !v.trim().is_empty());
 
+    let capture_diagnostics = obj
+        .get_opt(cx, "captureDiagnostics")?
+        .and_then(|v: Handle<JsValue>| v.downcast::<JsBoolean, _>(cx).ok())
+        .map(|v| v.value(cx))
+        .unwrap_or(false);
+
     let pool_idle_timeout = obj
         .get_opt(cx, "poolIdleTimeout")?
         .and_then(|v: Handle<JsValue>| v.downcast::<JsNumber, _>(cx).ok())
@@ -342,6 +424,8 @@ fn js_object_to_request_options(
         connect_timeout,
         read_timeout,
         compress,
+        capture_diagnostics,
+        event_sink,
     })
 }
 
@@ -417,6 +501,159 @@ fn response_to_js_object<'a, C: Context<'a>>(
         obj.set(cx, "contentLength", null_value)?;
     }
 
+    // Diagnostics payload (if present)
+    if let Some(diagnostics) = response.diagnostics {
+        let diagnostics_obj = cx.empty_object();
+        if let Some(total_duration_ms) = diagnostics.total_duration_ms {
+            let value = cx.number(total_duration_ms as f64);
+            diagnostics_obj.set(cx, "totalDurationMs", value)?;
+        }
+        if let Some(headers_duration_ms) = diagnostics.headers_duration_ms {
+            let value = cx.number(headers_duration_ms as f64);
+            diagnostics_obj.set(cx, "headersDurationMs", value)?;
+        }
+        if let Some(status) = diagnostics.status {
+            let value = cx.number(status as f64);
+            diagnostics_obj.set(cx, "status", value)?;
+        }
+        if let Some(local_addr) = diagnostics.local_addr {
+            let value = cx.string(local_addr);
+            diagnostics_obj.set(cx, "localAddr", value)?;
+        }
+        if let Some(remote_addr) = diagnostics.remote_addr {
+            let value = cx.string(remote_addr);
+            diagnostics_obj.set(cx, "remoteAddr", value)?;
+        }
+        let tls_present = cx.boolean(diagnostics.tls_peer_certificate_present);
+        diagnostics_obj.set(cx, "tlsPeerCertificatePresent", tls_present)?;
+        if let Some(chain_length) = diagnostics.tls_peer_certificate_chain_length {
+            let value = cx.number(chain_length as f64);
+            diagnostics_obj.set(cx, "tlsPeerCertificateChainLength", value)?;
+        }
+        obj.set(cx, "diagnostics", diagnostics_obj)?;
+    } else {
+        let null_value = cx.null();
+        obj.set(cx, "diagnostics", null_value)?;
+    }
+
+    Ok(obj)
+}
+
+fn request_event_to_js_object<'a, C: Context<'a>>(
+    cx: &mut C,
+    event: RequestEvent,
+) -> JsResult<'a, JsObject> {
+    let obj = cx.empty_object();
+
+    match event {
+        RequestEvent::RequestStart { timestamp_ms } => {
+            let event_type = cx.string("request_start");
+            let timestamp = cx.number(timestamp_ms as f64);
+            obj.set(cx, "type", event_type)?;
+            obj.set(cx, "timestamp", timestamp)?;
+        }
+        RequestEvent::RequestSent { timestamp_ms } => {
+            let event_type = cx.string("request_sent");
+            let timestamp = cx.number(timestamp_ms as f64);
+            obj.set(cx, "type", event_type)?;
+            obj.set(cx, "timestamp", timestamp)?;
+        }
+        RequestEvent::ResponseHeaders {
+            timestamp_ms,
+            status,
+            url,
+            content_length,
+        } => {
+            let event_type = cx.string("response_headers");
+            let timestamp = cx.number(timestamp_ms as f64);
+            let status_value = cx.number(status as f64);
+            let url_value = cx.string(url);
+            obj.set(cx, "type", event_type)?;
+            obj.set(cx, "timestamp", timestamp)?;
+            obj.set(cx, "status", status_value)?;
+            obj.set(cx, "url", url_value)?;
+            match content_length {
+                Some(value) => {
+                    let content_length_value = cx.number(value as f64);
+                    obj.set(cx, "contentLength", content_length_value)?;
+                }
+                None => {
+                    let null_value = cx.null();
+                    obj.set(cx, "contentLength", null_value)?;
+                }
+            };
+        }
+        RequestEvent::BodyProgress {
+            timestamp_ms,
+            downloaded_bytes,
+            content_length,
+        } => {
+            let event_type = cx.string("body_progress");
+            let timestamp = cx.number(timestamp_ms as f64);
+            let downloaded_bytes_value = cx.number(downloaded_bytes as f64);
+            obj.set(cx, "type", event_type)?;
+            obj.set(cx, "timestamp", timestamp)?;
+            obj.set(cx, "downloadedBytes", downloaded_bytes_value)?;
+            match content_length {
+                Some(value) => {
+                    let content_length_value = cx.number(value as f64);
+                    obj.set(cx, "contentLength", content_length_value)?;
+                }
+                None => {
+                    let null_value = cx.null();
+                    obj.set(cx, "contentLength", null_value)?;
+                }
+            };
+        }
+        RequestEvent::BodyComplete {
+            timestamp_ms,
+            downloaded_bytes,
+            content_length,
+        } => {
+            let event_type = cx.string("body_complete");
+            let timestamp = cx.number(timestamp_ms as f64);
+            let downloaded_bytes_value = cx.number(downloaded_bytes as f64);
+            obj.set(cx, "type", event_type)?;
+            obj.set(cx, "timestamp", timestamp)?;
+            obj.set(cx, "downloadedBytes", downloaded_bytes_value)?;
+            match content_length {
+                Some(value) => {
+                    let content_length_value = cx.number(value as f64);
+                    obj.set(cx, "contentLength", content_length_value)?;
+                }
+                None => {
+                    let null_value = cx.null();
+                    obj.set(cx, "contentLength", null_value)?;
+                }
+            };
+        }
+        RequestEvent::Done {
+            timestamp_ms,
+            status,
+            url,
+        } => {
+            let event_type = cx.string("done");
+            let timestamp = cx.number(timestamp_ms as f64);
+            let status_value = cx.number(status as f64);
+            let url_value = cx.string(url);
+            obj.set(cx, "type", event_type)?;
+            obj.set(cx, "timestamp", timestamp)?;
+            obj.set(cx, "status", status_value)?;
+            obj.set(cx, "url", url_value)?;
+        }
+        RequestEvent::Error {
+            timestamp_ms,
+            message,
+        } => {
+            let event_type = cx.string("error");
+            let timestamp = cx.number(timestamp_ms as f64);
+            let message_value = cx.string(message);
+            obj.set(cx, "type", event_type)?;
+            obj.set(cx, "timestamp", timestamp)?;
+            obj.set(cx, "message", message_value)?;
+        }
+    }
+
     Ok(obj)
 }
 
@@ -431,16 +668,41 @@ fn request(mut cx: FunctionContext) -> JsResult<JsPromise> {
         .map(|b| b.value(&mut cx))
         .unwrap_or(true);
 
-    // Convert JS object to Rust struct
-    let options = js_object_to_request_options(&mut cx, options_obj)?;
-
-    // Create a promise
-    let (deferred, promise) = cx.promise();
     let settle_channel = cx.channel();
+    let event_sink = options_obj
+        .get_opt::<JsFunction, _, _>(&mut cx, "onRequestEvent")?
+        .map(|callback| {
+            let callback = Arc::new(callback.root(&mut cx));
+            let channel = settle_channel.clone();
+            Arc::new(move |event: RequestEvent| {
+                let callback = callback.clone();
+                channel.send(move |mut cx| {
+                    let cb = callback.to_inner(&mut cx);
+                    let this = cx.undefined();
+                    let event_obj = request_event_to_js_object(&mut cx, event)?;
+                    cb.call(&mut cx, this, vec![event_obj.upcast()])?;
+                    Ok(())
+                });
+            }) as client::RequestEventSink
+        });
+
+    // Convert JS object to Rust struct
+    let options = js_object_to_request_options(&mut cx, options_obj, event_sink)?;
+    let error_event_sink = options.event_sink.clone();
+
+    let (deferred, promise) = cx.promise();
 
     if !cancellable {
         HTTP_RUNTIME.spawn(async move {
             let result = make_request(options).await;
+            if let Err(ref e) = result {
+                if let Some(sink) = error_event_sink.as_ref() {
+                    sink(RequestEvent::Error {
+                        timestamp_ms: 0,
+                        message: format!("{:#}", e),
+                    });
+                }
+            }
 
             // Send result back to JS
             deferred.settle_with(&settle_channel, move |mut cx| match result {
@@ -465,6 +727,15 @@ fn request(mut cx: FunctionContext) -> JsResult<JsPromise> {
             res = make_request(options) => res,
         };
 
+        if let Err(ref e) = result {
+            if let Some(sink) = error_event_sink.as_ref() {
+                sink(RequestEvent::Error {
+                    timestamp_ms: 0,
+                    message: format!("{:#}", e),
+                });
+            }
+        }
+
         REQUEST_CANCELLATIONS.remove(&request_id);
 
         // Send result back to JS
@@ -488,6 +759,33 @@ fn get_profiles(mut cx: FunctionContext) -> JsResult<JsArray> {
     for (i, profile) in generated_profiles::BROWSER_PROFILES.iter().enumerate() {
         let js_string = cx.string(*profile);
         js_array.set(&mut cx, i as u32, js_string)?;
+    }
+
+    Ok(js_array)
+}
+
+// Get the headers a browser profile injects, without sending a request
+fn get_emulation_headers(mut cx: FunctionContext) -> JsResult<JsArray> {
+    let browser_str = cx.argument::<JsString>(0)?.value(&mut cx);
+    let os_str = cx.argument::<JsString>(1)?.value(&mut cx);
+
+    let headers = match custom_emulation::preset_emulation_headers(
+        parse_emulation(&browser_str),
+        parse_emulation_os(&os_str),
+    ) {
+        Ok(headers) => headers,
+        Err(err) => return cx.throw_error(format!("{err:#}")),
+    };
+
+    let js_array = JsArray::new(&mut cx, headers.len());
+
+    for (i, (name, value)) in headers.iter().enumerate() {
+        let entry = cx.empty_array();
+        let name_str = cx.string(name);
+        let value_str = cx.string(value);
+        entry.set(&mut cx, 0, name_str)?;
+        entry.set(&mut cx, 1, value_str)?;
+        js_array.set(&mut cx, i as u32, entry)?;
     }
 
     Ok(js_array)
@@ -550,10 +848,25 @@ fn create_transport(mut cx: FunctionContext) -> JsResult<JsString> {
         pool_max_size_opt,
         connect_timeout_opt,
         read_timeout_opt,
+        capture_diagnostics_opt,
+        resolve,
     ) = if let Some(value) = options_value {
         if value.is_a::<JsUndefined, _>(&mut cx) || value.is_a::<JsNull, _>(&mut cx) {
             (
-                None, None, None, None, Vec::new(), None, None, None, None, None, None, None,
+                None,
+                None,
+                None,
+                None,
+                Vec::new(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Vec::new(),
             )
         } else {
             let obj = value.downcast_or_throw::<JsObject, _>(&mut cx)?;
@@ -606,6 +919,11 @@ fn create_transport(mut cx: FunctionContext) -> JsResult<JsString> {
                 .get_opt(&mut cx, "readTimeout")?
                 .and_then(|v: Handle<JsValue>| v.downcast::<JsNumber, _>(&mut cx).ok())
                 .map(|v| v.value(&mut cx) as u64);
+            let capture_diagnostics = obj
+                .get_opt(&mut cx, "captureDiagnostics")?
+                .and_then(|v: Handle<JsValue>| v.downcast::<JsBoolean, _>(&mut cx).ok())
+                .map(|v| v.value(&mut cx));
+            let resolve = parse_resolve_opt(&mut cx, obj, "resolve")?;
 
             (
                 browser,
@@ -620,11 +938,26 @@ fn create_transport(mut cx: FunctionContext) -> JsResult<JsString> {
                 pool_max_size,
                 connect_timeout,
                 read_timeout,
+                capture_diagnostics,
+                resolve,
             )
         }
     } else {
         (
-            None, None, None, None, Vec::new(), None, None, None, None, None, None, None,
+            None,
+            None,
+            None,
+            None,
+            Vec::new(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Vec::new(),
         )
     };
 
@@ -635,6 +968,7 @@ fn create_transport(mut cx: FunctionContext) -> JsResult<JsString> {
         .as_deref()
         .map(parse_trust_store_mode)
         .unwrap_or_default();
+    let capture_diagnostics = capture_diagnostics_opt.unwrap_or(false);
 
     match create_managed_transport(
         browser,
@@ -649,6 +983,8 @@ fn create_transport(mut cx: FunctionContext) -> JsResult<JsString> {
         pool_max_size_opt,
         connect_timeout_opt,
         read_timeout_opt,
+        capture_diagnostics,
+        resolve,
     ) {
         Ok(id) => Ok(cx.string(id)),
         Err(e) => {
@@ -1326,6 +1662,57 @@ fn get_cookies(mut cx: FunctionContext) -> JsResult<JsObject> {
     }
 }
 
+fn get_all_cookies(mut cx: FunctionContext) -> JsResult<JsArray> {
+    let session_id = cx.argument::<JsString>(0)?.value(&mut cx);
+
+    match get_all_session_cookies(&session_id) {
+        Ok(cookies) => {
+            let array = JsArray::new(&mut cx, cookies.len());
+
+            for (index, cookie) in cookies.into_iter().enumerate() {
+                let obj = cx.empty_object();
+                let name = cx.string(cookie.name);
+                let value = cx.string(cookie.value);
+                let secure = cx.boolean(cookie.secure);
+                let http_only = cx.boolean(cookie.http_only);
+
+                obj.set(&mut cx, "name", name)?;
+                obj.set(&mut cx, "value", value)?;
+                obj.set(&mut cx, "secure", secure)?;
+                obj.set(&mut cx, "httpOnly", http_only)?;
+
+                if let Some(domain) = cookie.domain {
+                    let js_domain = cx.string(domain);
+                    obj.set(&mut cx, "domain", js_domain)?;
+                }
+
+                if let Some(path) = cookie.path {
+                    let js_path = cx.string(path);
+                    obj.set(&mut cx, "path", js_path)?;
+                }
+
+                if let Some(same_site) = cookie.same_site {
+                    let js_same_site = cx.string(same_site);
+                    obj.set(&mut cx, "sameSite", js_same_site)?;
+                }
+
+                if let Some(expires_at_ms) = cookie.expires_at_ms {
+                    let js_expires_at_ms = cx.number(expires_at_ms);
+                    obj.set(&mut cx, "expiresAtMs", js_expires_at_ms)?;
+                }
+
+                array.set(&mut cx, index as u32, obj)?;
+            }
+
+            Ok(array)
+        }
+        Err(e) => {
+            let msg = format!("{:#}", e);
+            cx.throw_error(msg)
+        }
+    }
+}
+
 fn set_cookie(mut cx: FunctionContext) -> JsResult<JsUndefined> {
     let session_id = cx.argument::<JsString>(0)?.value(&mut cx);
     let name = cx.argument::<JsString>(1)?.value(&mut cx);
@@ -1333,6 +1720,72 @@ fn set_cookie(mut cx: FunctionContext) -> JsResult<JsUndefined> {
     let url = cx.argument::<JsString>(3)?.value(&mut cx);
 
     if let Err(e) = set_session_cookie(&session_id, &name, &value, &url) {
+        let msg = format!("{:#}", e);
+        return cx.throw_error(msg);
+    }
+
+    Ok(cx.undefined())
+}
+
+fn set_cookies(mut cx: FunctionContext) -> JsResult<JsUndefined> {
+    let session_id = cx.argument::<JsString>(0)?.value(&mut cx);
+    let entries = cx.argument::<JsArray>(1)?.to_vec(&mut cx)?;
+    let default_url = cx
+        .argument_opt(2)
+        .and_then(|v| v.downcast::<JsString, _>(&mut cx).ok())
+        .map(|v| v.value(&mut cx));
+
+    let mut cookies = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let obj = entry.downcast_or_throw::<JsObject, _>(&mut cx)?;
+
+        let name = obj.get::<JsString, _, _>(&mut cx, "name")?.value(&mut cx);
+        let value = obj.get::<JsString, _, _>(&mut cx, "value")?.value(&mut cx);
+        let domain = obj
+            .get_opt(&mut cx, "domain")?
+            .and_then(|v: Handle<JsValue>| v.downcast::<JsString, _>(&mut cx).ok())
+            .map(|v| v.value(&mut cx));
+        let path = obj
+            .get_opt(&mut cx, "path")?
+            .and_then(|v: Handle<JsValue>| v.downcast::<JsString, _>(&mut cx).ok())
+            .map(|v| v.value(&mut cx));
+        let secure = obj
+            .get_opt(&mut cx, "secure")?
+            .and_then(|v: Handle<JsValue>| v.downcast::<JsBoolean, _>(&mut cx).ok())
+            .map(|v| v.value(&mut cx))
+            .unwrap_or(false);
+        let http_only = obj
+            .get_opt(&mut cx, "httpOnly")?
+            .and_then(|v: Handle<JsValue>| v.downcast::<JsBoolean, _>(&mut cx).ok())
+            .map(|v| v.value(&mut cx))
+            .unwrap_or(false);
+        let same_site = obj
+            .get_opt(&mut cx, "sameSite")?
+            .and_then(|v: Handle<JsValue>| v.downcast::<JsString, _>(&mut cx).ok())
+            .map(|v| v.value(&mut cx));
+        let expires_at_ms = obj
+            .get_opt(&mut cx, "expiresAtMs")?
+            .and_then(|v: Handle<JsValue>| v.downcast::<JsNumber, _>(&mut cx).ok())
+            .map(|v| v.value(&mut cx));
+        let url = obj
+            .get_opt(&mut cx, "url")?
+            .and_then(|v: Handle<JsValue>| v.downcast::<JsString, _>(&mut cx).ok())
+            .map(|v| v.value(&mut cx));
+
+        cookies.push(SessionCookieInput {
+            name,
+            value,
+            domain,
+            path,
+            secure,
+            http_only,
+            same_site,
+            expires_at_ms,
+            url,
+        });
+    }
+
+    if let Err(e) = set_session_cookies(&session_id, &cookies, default_url.as_deref()) {
         let msg = format!("{:#}", e);
         return cx.throw_error(msg);
     }
@@ -1350,11 +1803,14 @@ fn main(mut cx: ModuleContext) -> NeonResult<()> {
     cx.export_function("cancelBody", cancel_body_stream)?;
     cx.export_function("getProfiles", get_profiles)?;
     cx.export_function("getOperatingSystems", get_operating_systems)?;
+    cx.export_function("getEmulationHeaders", get_emulation_headers)?;
     cx.export_function("createSession", create_session)?;
     cx.export_function("clearSession", clear_session)?;
     cx.export_function("dropSession", drop_session)?;
     cx.export_function("getCookies", get_cookies)?;
+    cx.export_function("getAllCookies", get_all_cookies)?;
     cx.export_function("setCookie", set_cookie)?;
+    cx.export_function("setCookies", set_cookies)?;
     cx.export_function("createTransport", create_transport)?;
     cx.export_function("dropTransport", drop_transport)?;
     cx.export_function("websocketConnect", websocket_connect)?;

@@ -4,21 +4,23 @@ use dashmap::DashMap;
 use futures_util::{Stream, StreamExt};
 use moka::sync::Cache;
 use std::borrow::Cow;
+use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 use uuid::Uuid;
 use wreq::cookie::Jar;
 use wreq::header::{HeaderMap, HeaderName, HeaderValue, OrigHeaderMap};
-use wreq::tls::CertStore;
+use wreq::tls::TlsInfo;
+use wreq::tls::trust::CertStore;
 use wreq::{Client as HttpClient, Method, Proxy, redirect};
 
 use crate::custom_emulation::resolve_emulation;
-use wreq_util::{Emulation as BrowserEmulation, EmulationOS as BrowserEmulationOS};
+use wreq_util::{Platform as BrowserEmulationOS, Profile as BrowserEmulation};
 
 #[cfg(test)]
 use std::sync::Mutex as StdMutex;
@@ -69,7 +71,55 @@ impl RedirectMode {
     }
 }
 
+pub type RequestEventSink = Arc<dyn Fn(RequestEvent) + Send + Sync>;
+
 #[derive(Debug, Clone)]
+pub enum RequestEvent {
+    RequestStart {
+        timestamp_ms: u64,
+    },
+    RequestSent {
+        timestamp_ms: u64,
+    },
+    ResponseHeaders {
+        timestamp_ms: u64,
+        status: u16,
+        url: String,
+        content_length: Option<u64>,
+    },
+    BodyProgress {
+        timestamp_ms: u64,
+        downloaded_bytes: u64,
+        content_length: Option<u64>,
+    },
+    BodyComplete {
+        timestamp_ms: u64,
+        downloaded_bytes: u64,
+        content_length: Option<u64>,
+    },
+    Done {
+        timestamp_ms: u64,
+        status: u16,
+        url: String,
+    },
+    Error {
+        timestamp_ms: u64,
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct RequestDiagnostics {
+    pub total_duration_ms: Option<u64>,
+    pub headers_duration_ms: Option<u64>,
+    pub status: Option<u16>,
+    pub local_addr: Option<String>,
+    pub remote_addr: Option<String>,
+    pub tls_peer_certificate_present: bool,
+    pub tls_peer_certificate_chain_length: Option<usize>,
+}
+
+#[derive(Clone)]
 pub struct RequestOptions {
     pub url: String,
     pub browser: Option<BrowserEmulation>,
@@ -94,6 +144,8 @@ pub struct RequestOptions {
     pub connect_timeout: Option<u64>,
     pub read_timeout: Option<u64>,
     pub compress: bool,
+    pub capture_diagnostics: bool,
+    pub event_sink: Option<RequestEventSink>,
 }
 
 #[derive(Debug, Clone)]
@@ -105,6 +157,7 @@ pub struct Response {
     pub cookies: Vec<(String, String)>,
     pub url: String,
     pub content_length: Option<u64>,
+    pub diagnostics: Option<RequestDiagnostics>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -118,6 +171,7 @@ struct SessionConfig {
     trust_store: TrustStoreMode,
     connect_timeout: Option<Duration>,
     read_timeout: Option<Duration>,
+    capture_diagnostics: bool,
 }
 
 impl SessionConfig {
@@ -133,6 +187,7 @@ impl SessionConfig {
             trust_store: options.trust_store,
             connect_timeout: options.connect_timeout.map(Duration::from_millis),
             read_timeout: options.read_timeout.map(Duration::from_millis),
+            capture_diagnostics: options.capture_diagnostics,
         }
     }
 }
@@ -151,6 +206,8 @@ struct TransportConfig {
     pool_max_size: Option<u32>,
     connect_timeout: Option<Duration>,
     read_timeout: Option<Duration>,
+    capture_diagnostics: bool,
+    resolve: Vec<(String, Vec<SocketAddr>)>,
 }
 
 impl TransportConfig {
@@ -169,6 +226,8 @@ impl TransportConfig {
             pool_max_size: options.pool_max_size,
             connect_timeout: options.connect_timeout.map(Duration::from_millis),
             read_timeout: options.read_timeout.map(Duration::from_millis),
+            capture_diagnostics: options.capture_diagnostics,
+            resolve: Vec::new(),
         }
     }
 
@@ -186,6 +245,8 @@ impl TransportConfig {
         pool_max_size: Option<u32>,
         connect_timeout: Option<u64>,
         read_timeout: Option<u64>,
+        capture_diagnostics: bool,
+        resolve: Vec<(String, Vec<SocketAddr>)>,
     ) -> Self {
         Self {
             browser,
@@ -200,6 +261,8 @@ impl TransportConfig {
             pool_max_size,
             connect_timeout: connect_timeout.map(Duration::from_millis),
             read_timeout: read_timeout.map(Duration::from_millis),
+            capture_diagnostics,
+            resolve,
         }
     }
 }
@@ -236,12 +299,54 @@ struct EphemeralClientManager {
 
 pub type ResponseBodyStream = Pin<Box<dyn Stream<Item = wreq::Result<Bytes>> + Send>>;
 
+#[derive(Clone)]
+struct BodyEventState {
+    sink: RequestEventSink,
+    content_length: Option<u64>,
+    downloaded_bytes: Arc<AtomicU64>,
+    status: u16,
+    url: String,
+}
+
 static BODY_STREAMS: LazyLock<Cache<u64, Arc<Mutex<ResponseBodyStream>>>> = LazyLock::new(|| {
     Cache::builder()
         .time_to_idle(Duration::from_secs(300))
         .build()
 });
+static BODY_EVENT_STATES: LazyLock<DashMap<u64, BodyEventState>> = LazyLock::new(DashMap::new);
 static NEXT_BODY_HANDLE: AtomicU64 = AtomicU64::new(1);
+
+fn emit_request_event(sink: &Option<RequestEventSink>, event: RequestEvent) {
+    if let Some(sink) = sink {
+        sink(event);
+    }
+}
+
+fn emit_body_progress(state: &BodyEventState, chunk_len: u64) {
+    let downloaded = state
+        .downloaded_bytes
+        .fetch_add(chunk_len, Ordering::Relaxed)
+        + chunk_len;
+    (state.sink)(RequestEvent::BodyProgress {
+        timestamp_ms: 0,
+        downloaded_bytes: downloaded,
+        content_length: state.content_length,
+    });
+}
+
+fn emit_body_complete(state: &BodyEventState) {
+    let downloaded = state.downloaded_bytes.load(Ordering::Relaxed);
+    (state.sink)(RequestEvent::BodyComplete {
+        timestamp_ms: 0,
+        downloaded_bytes: downloaded,
+        content_length: state.content_length,
+    });
+    (state.sink)(RequestEvent::Done {
+        timestamp_ms: 0,
+        status: state.status,
+        url: state.url.clone(),
+    });
+}
 
 fn next_body_handle() -> u64 {
     NEXT_BODY_HANDLE.fetch_add(1, Ordering::Relaxed)
@@ -316,13 +421,27 @@ pub async fn read_body_chunk(handle: u64) -> Result<Option<Bytes>> {
     let next = guard.next().await;
 
     match next {
-        Some(Ok(bytes)) => Ok(Some(bytes)),
+        Some(Ok(bytes)) => {
+            if let Some(state) = BODY_EVENT_STATES.get(&handle) {
+                emit_body_progress(&state, bytes.len() as u64);
+            }
+            Ok(Some(bytes))
+        }
         Some(Err(err)) => {
             BODY_STREAMS.invalidate(&handle);
+            if let Some((_, state)) = BODY_EVENT_STATES.remove(&handle) {
+                (state.sink)(RequestEvent::Error {
+                    timestamp_ms: 0,
+                    message: format!("{:#}", err),
+                });
+            }
             Err(err.into())
         }
         None => {
             BODY_STREAMS.invalidate(&handle);
+            if let Some((_, state)) = BODY_EVENT_STATES.remove(&handle) {
+                emit_body_complete(&state);
+            }
             Ok(None)
         }
     }
@@ -341,7 +460,14 @@ pub async fn read_body_all(handle: u64) -> Result<Bytes> {
     while let Some(result) = guard.next().await {
         let bytes = result?;
         total_len += bytes.len();
+        if let Some(state) = BODY_EVENT_STATES.get(&handle) {
+            emit_body_progress(&state, bytes.len() as u64);
+        }
         chunks.push(bytes);
+    }
+
+    if let Some((_, state)) = BODY_EVENT_STATES.remove(&handle) {
+        emit_body_complete(&state);
     }
 
     // Fast path: single chunk or empty
@@ -362,6 +488,7 @@ pub async fn read_body_all(handle: u64) -> Result<Bytes> {
 
 pub fn drop_body_stream(handle: u64) {
     BODY_STREAMS.invalidate(&handle);
+    BODY_EVENT_STATES.remove(&handle);
 }
 
 impl TransportManager {
@@ -492,8 +619,12 @@ async fn make_request_inner(
         redirect,
         disable_default_headers,
         compress,
+        capture_diagnostics,
+        event_sink,
         ..
     } = options;
+    let start = Instant::now();
+    emit_request_event(&event_sink, RequestEvent::RequestStart { timestamp_ms: 0 });
 
     // Methods are already normalized to uppercase in JS; default to GET when empty.
     let method = if method.is_empty() {
@@ -556,6 +687,13 @@ async fn make_request_inner(
 
     request = request.cookie_provider(cookie_jar);
 
+    emit_request_event(
+        &event_sink,
+        RequestEvent::RequestSent {
+            timestamp_ms: start.elapsed().as_millis() as u64,
+        },
+    );
+
     // Execute request
     let response = request
         .send()
@@ -582,6 +720,35 @@ async fn make_request_inner(
         .collect();
 
     let mut content_length = response.content_length();
+    emit_request_event(
+        &event_sink,
+        RequestEvent::ResponseHeaders {
+            timestamp_ms: start.elapsed().as_millis() as u64,
+            status,
+            url: final_url.clone(),
+            content_length,
+        },
+    );
+
+    let diagnostics = if capture_diagnostics {
+        let tls_info = response.extensions().get::<TlsInfo>();
+        Some(RequestDiagnostics {
+            total_duration_ms: None,
+            headers_duration_ms: Some(start.elapsed().as_millis() as u64),
+            status: Some(status),
+            local_addr: response.local_addr().map(|addr| addr.to_string()),
+            remote_addr: response.remote_addr().map(|addr| addr.to_string()),
+            tls_peer_certificate_present: tls_info
+                .and_then(|info| info.peer_certificate())
+                .is_some(),
+            tls_peer_certificate_chain_length: tls_info
+                .and_then(|info| info.peer_certificate_chain())
+                .map(|chain| chain.count()),
+        })
+    } else {
+        None
+    };
+
     let allows_body = response_allows_body(status, method.as_ref());
 
     let (body_handle, body_bytes) = if allows_body {
@@ -592,14 +759,56 @@ async fn make_request_inner(
         if inline_eligible {
             let bytes = response.bytes().await?;
             content_length = Some(bytes.len() as u64);
+            if let Some(sink) = event_sink.as_ref() {
+                sink(RequestEvent::BodyProgress {
+                    timestamp_ms: start.elapsed().as_millis() as u64,
+                    downloaded_bytes: bytes.len() as u64,
+                    content_length,
+                });
+                sink(RequestEvent::BodyComplete {
+                    timestamp_ms: start.elapsed().as_millis() as u64,
+                    downloaded_bytes: bytes.len() as u64,
+                    content_length,
+                });
+                sink(RequestEvent::Done {
+                    timestamp_ms: start.elapsed().as_millis() as u64,
+                    status,
+                    url: final_url.clone(),
+                });
+            }
             (None, Some(bytes))
         } else {
             let stream: ResponseBodyStream = Box::pin(response.bytes_stream());
-            (Some(store_body_stream(stream)), None)
+            let handle = store_body_stream(stream);
+            if let Some(sink) = event_sink.as_ref() {
+                BODY_EVENT_STATES.insert(
+                    handle,
+                    BodyEventState {
+                        sink: sink.clone(),
+                        content_length,
+                        downloaded_bytes: Arc::new(AtomicU64::new(0)),
+                        status,
+                        url: final_url.clone(),
+                    },
+                );
+            }
+            (Some(handle), None)
         }
     } else {
+        if let Some(sink) = event_sink.as_ref() {
+            sink(RequestEvent::Done {
+                timestamp_ms: start.elapsed().as_millis() as u64,
+                status,
+                url: final_url.clone(),
+            });
+        }
         (None, None)
     };
+
+    let diagnostics = diagnostics.map(|mut diagnostics| {
+        diagnostics.total_duration_ms = Some(start.elapsed().as_millis() as u64);
+        diagnostics
+    });
 
     Ok(Response {
         status,
@@ -609,17 +818,18 @@ async fn make_request_inner(
         cookies,
         url: final_url,
         content_length,
+        diagnostics,
     })
 }
 
 /// Build a client for explicit transports (full pooling config).
 fn build_client(config: &TransportConfig) -> Result<ResolvedClient> {
-    let mut emulation = resolve_emulation(
+    let emulation = resolve_emulation(
         config.browser,
         config.browser_os,
         config.emulation_json.as_deref(),
     )?;
-    let emulation_orig_headers = emulation.orig_headers_mut().clone();
+    let emulation_orig_headers = emulation.orig_headers.clone();
 
     let mut client_builder = HttpClient::builder().emulation(emulation);
 
@@ -629,9 +839,13 @@ fn build_client(config: &TransportConfig) -> Result<ResolvedClient> {
     }
 
     if config.insecure {
-        client_builder = client_builder.cert_verification(false);
+        client_builder = client_builder.tls_cert_verification(false);
     } else {
-        client_builder = client_builder.cert_store(build_cert_store(config.trust_store)?);
+        client_builder = client_builder.tls_cert_store(build_cert_store(config.trust_store)?);
+    }
+
+    for (domain, addrs) in &config.resolve {
+        client_builder = client_builder.resolve_to_addrs(domain.clone(), addrs.iter().copied());
     }
 
     if let Some(pool_idle_timeout) = config.pool_idle_timeout {
@@ -643,7 +857,7 @@ fn build_client(config: &TransportConfig) -> Result<ResolvedClient> {
     }
 
     if let Some(pool_max_size) = config.pool_max_size {
-        client_builder = client_builder.pool_max_size(pool_max_size);
+        client_builder = client_builder.pool_max_size(pool_max_size as usize);
     }
 
     if let Some(connect_timeout) = config.connect_timeout {
@@ -652,6 +866,10 @@ fn build_client(config: &TransportConfig) -> Result<ResolvedClient> {
 
     if let Some(read_timeout) = config.read_timeout {
         client_builder = client_builder.read_timeout(read_timeout);
+    }
+
+    if config.capture_diagnostics {
+        client_builder = client_builder.tls_info(true);
     }
 
     let http_client = client_builder
@@ -665,12 +883,12 @@ fn build_client(config: &TransportConfig) -> Result<ResolvedClient> {
 
 /// Build a client for ephemeral (stateless) requests - no connection pooling.
 fn build_ephemeral_client(config: &SessionConfig) -> Result<ResolvedClient> {
-    let mut emulation = resolve_emulation(
+    let emulation = resolve_emulation(
         config.browser,
         config.browser_os,
         config.emulation_json.as_deref(),
     )?;
-    let emulation_orig_headers = emulation.orig_headers_mut().clone();
+    let emulation_orig_headers = emulation.orig_headers.clone();
 
     let mut client_builder = HttpClient::builder()
         .emulation(emulation)
@@ -682,9 +900,9 @@ fn build_ephemeral_client(config: &SessionConfig) -> Result<ResolvedClient> {
     }
 
     if config.insecure {
-        client_builder = client_builder.cert_verification(false);
+        client_builder = client_builder.tls_cert_verification(false);
     } else {
-        client_builder = client_builder.cert_store(build_cert_store(config.trust_store)?);
+        client_builder = client_builder.tls_cert_store(build_cert_store(config.trust_store)?);
     }
 
     if let Some(connect_timeout) = config.connect_timeout {
@@ -693,6 +911,10 @@ fn build_ephemeral_client(config: &SessionConfig) -> Result<ResolvedClient> {
 
     if let Some(read_timeout) = config.read_timeout {
         client_builder = client_builder.read_timeout(read_timeout);
+    }
+
+    if config.capture_diagnostics {
+        client_builder = client_builder.tls_info(true);
     }
 
     let http_client = client_builder
@@ -740,6 +962,8 @@ pub fn create_managed_transport(
     pool_max_size: Option<u32>,
     connect_timeout: Option<u64>,
     read_timeout: Option<u64>,
+    capture_diagnostics: bool,
+    resolve: Vec<(String, Vec<SocketAddr>)>,
 ) -> Result<String> {
     let config = TransportConfig::new(
         browser,
@@ -754,6 +978,8 @@ pub fn create_managed_transport(
         pool_max_size,
         connect_timeout,
         read_timeout,
+        capture_diagnostics,
+        resolve,
     );
     TRANSPORT_MANAGER.create_transport(config)
 }
@@ -769,9 +995,9 @@ pub fn generate_session_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use boring2::stack::Stack;
-    use boring2::x509::store::X509StoreBuilder;
-    use boring2::x509::{X509, X509StoreContext};
+    use btls::stack::Stack;
+    use btls::x509::store::X509StoreBuilder;
+    use btls::x509::{X509, X509StoreContext};
     use std::env;
     use std::ffi::OsString;
     use std::fs;
@@ -784,6 +1010,42 @@ mod tests {
         include_str!("../../src/test/helpers/certs/default-paths-leaf.crt");
 
     static ENV_LOCK: LazyLock<StdMutex<()>> = LazyLock::new(|| StdMutex::new(()));
+
+    #[test]
+    fn cookie_origin_uri_maps_websocket_schemes_to_http() {
+        let cases = [
+            (
+                "ws://127.0.0.1:8080/socket?a=1",
+                "http://127.0.0.1:8080/socket?a=1",
+            ),
+            ("wss://example.com/socket", "https://example.com/socket"),
+            ("http://example.com/", "http://example.com/"),
+            ("https://example.com/", "https://example.com/"),
+        ];
+
+        for (input, expected) in cases {
+            let uri: wreq::Uri = input.parse().unwrap();
+            assert_eq!(cookie_origin_uri(&uri).to_string(), expected);
+        }
+    }
+
+    #[test]
+    fn websocket_uris_select_cookies_stored_for_the_http_origin() {
+        use wreq::cookie::CookieStore;
+
+        let jar = Jar::default();
+        jar.add("sessionCookie=jar; Path=/", "http://127.0.0.1:8080/");
+
+        let ws: wreq::Uri = "ws://127.0.0.1:8080/socket".parse().unwrap();
+        let cookies = jar.cookies(&cookie_origin_uri(&ws), wreq::Version::HTTP_11);
+
+        match cookies {
+            wreq::cookie::Cookies::Compressed(value) => {
+                assert_eq!(value.to_str().unwrap(), "sessionCookie=jar");
+            }
+            other => panic!("expected cookies for the ws origin, got {other:?}"),
+        }
+    }
 
     fn base_request_options() -> RequestOptions {
         RequestOptions {
@@ -810,6 +1072,8 @@ mod tests {
             connect_timeout: None,
             read_timeout: None,
             compress: true,
+            capture_diagnostics: false,
+            event_sink: None,
         }
     }
 
@@ -875,7 +1139,7 @@ mod tests {
         });
     }
 
-    fn build_test_store(mode: TrustStoreMode) -> boring2::x509::store::X509Store {
+    fn build_test_store(mode: TrustStoreMode) -> btls::x509::store::X509Store {
         match mode {
             TrustStoreMode::Mozilla => {
                 let mut builder = X509StoreBuilder::new().expect("mozilla builder");
@@ -911,7 +1175,7 @@ mod tests {
         }
     }
 
-    fn verify_leaf(store: &boring2::x509::store::X509Store, leaf_pem: &str) -> bool {
+    fn verify_leaf(store: &btls::x509::store::X509Store, leaf_pem: &str) -> bool {
         let cert = X509::from_pem(leaf_pem.as_bytes()).expect("leaf cert");
         let chain = Stack::new().expect("empty chain");
         let mut context = X509StoreContext::new().expect("store context");
@@ -959,6 +1223,24 @@ mod tests {
     }
 }
 
+/// Map a WebSocket URI onto its HTTP origin for cookie-jar lookups.
+///
+/// wreq's cookie store follows RFC 6265 and only matches `http`/`https` URIs, so a `ws://` or
+/// `wss://` URI would never select a cookie. Browsers scope WebSocket cookies to the equivalent
+/// HTTP origin, so rewrite the scheme before consulting the jar. Non-WebSocket URIs pass through.
+pub(crate) fn cookie_origin_uri(uri: &wreq::Uri) -> Cow<'_, wreq::Uri> {
+    // Dropping the leading "ws" turns ws://host into http://host and wss://host into https://host.
+    let rewritten = match uri.scheme_str() {
+        Some("ws") | Some("wss") => format!("http{}", &uri.to_string()["ws".len()..]),
+        _ => return Cow::Borrowed(uri),
+    };
+
+    match rewritten.parse() {
+        Ok(uri) => Cow::Owned(uri),
+        Err(_) => Cow::Borrowed(uri),
+    }
+}
+
 /// Get cookies from a session's jar that would be sent to the given URL
 /// (RFC 6265 domain/path matching, secure filtering, expiry check).
 pub fn get_session_cookies(session_id: &str, url: &str) -> Result<Vec<(String, String)>> {
@@ -968,7 +1250,7 @@ pub fn get_session_cookies(session_id: &str, url: &str) -> Result<Vec<(String, S
     let uri: wreq::Uri = url
         .parse()
         .with_context(|| format!("Invalid URL: {}", url))?;
-    let cookie_header = jar.cookies(&uri);
+    let cookie_header = jar.cookies(&cookie_origin_uri(&uri), wreq::Version::HTTP_11);
 
     let pairs = match cookie_header {
         wreq::cookie::Cookies::Compressed(header_value) => {
@@ -988,6 +1270,54 @@ pub fn get_session_cookies(session_id: &str, url: &str) -> Result<Vec<(String, S
         _ => Vec::new(),
     };
     Ok(pairs)
+}
+
+#[derive(Debug, Clone)]
+pub struct SessionCookieInfo {
+    pub name: String,
+    pub value: String,
+    pub domain: Option<String>,
+    pub path: Option<String>,
+    pub secure: bool,
+    pub http_only: bool,
+    pub same_site: Option<String>,
+    pub expires_at_ms: Option<f64>,
+}
+
+pub fn get_all_session_cookies(session_id: &str) -> Result<Vec<SessionCookieInfo>> {
+    let jar = SESSION_MANAGER.jar_for(session_id)?;
+
+    Ok(jar
+        .get_all()
+        // wreq's wrapper only answers "is it Lax?" and "is it Strict?", which cannot tell
+        // `SameSite=None` apart from an absent attribute. The raw cookie reports the attribute
+        // itself.
+        .map(cookie::Cookie::from)
+        .map(|cookie| {
+            let same_site = cookie.same_site().map(|same_site| match same_site {
+                cookie::SameSite::Lax => "lax".to_owned(),
+                cookie::SameSite::Strict => "strict".to_owned(),
+                cookie::SameSite::None => "none".to_owned(),
+            });
+
+            let expires_at_ms = cookie
+                .expires_datetime()
+                .map(std::time::SystemTime::from)
+                .and_then(|expires| expires.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|duration| duration.as_millis() as f64);
+
+            SessionCookieInfo {
+                name: cookie.name().to_owned(),
+                value: cookie.value().to_owned(),
+                domain: cookie.domain().map(ToOwned::to_owned),
+                path: cookie.path().map(ToOwned::to_owned),
+                secure: cookie.secure().unwrap_or(false),
+                http_only: cookie.http_only().unwrap_or(false),
+                same_site,
+                expires_at_ms,
+            }
+        })
+        .collect())
 }
 
 fn parse_cookie_pairs(s: &str) -> Vec<(String, String)> {
@@ -1019,7 +1349,146 @@ pub fn set_session_cookie(session_id: &str, name: &str, value: &str, url: &str) 
         .with_context(|| format!("Invalid URL: {}", url))?;
 
     let jar = SESSION_MANAGER.jar_for(session_id)?;
-    jar.add(cookie, uri);
+    jar.add(cookie, cookie_origin_uri(&uri).into_owned());
+    Ok(())
+}
+
+/// Extract the cookie-scoping host from a URL.
+fn host_from_url(url: &str) -> Result<String> {
+    let uri: wreq::Uri = url
+        .parse()
+        .with_context(|| format!("Invalid URL: {}", url))?;
+    cookie_origin_uri(&uri)
+        .host()
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| anyhow!("URL has no host: {}", url))
+}
+
+/// A cookie to restore into a session jar, mirroring `SessionCookieInfo`.
+#[derive(Debug, Clone)]
+pub struct SessionCookieInput {
+    pub name: String,
+    pub value: String,
+    pub domain: Option<String>,
+    pub path: Option<String>,
+    pub secure: bool,
+    pub http_only: bool,
+    pub same_site: Option<String>,
+    pub expires_at_ms: Option<f64>,
+    /// Origin for this cookie alone, overriding the batch URL. Only consulted for host-only
+    /// cookies (those without a `domain`).
+    pub url: Option<String>,
+}
+
+/// Restore a batch of cookies (as exported by `get_all_session_cookies`) into a session jar.
+///
+/// Cookies that carry a `domain` are self-describing and scope themselves. Host-only cookies have
+/// no `domain` attribute, and the jar keeps their origin host as an internal key it never hands
+/// back, so `default_url` has to say which host they belong to.
+///
+/// The whole batch is validated before anything is stored, so a rejected cookie leaves the jar
+/// untouched instead of applying a partial restore.
+pub fn set_session_cookies(
+    session_id: &str,
+    cookies: &[SessionCookieInput],
+    default_url: Option<&str>,
+) -> Result<()> {
+    let default_host = match default_url {
+        Some(url) => Some(host_from_url(url)?),
+        None => None,
+    };
+
+    let mut prepared = Vec::with_capacity(cookies.len());
+    for (index, input) in cookies.iter().enumerate() {
+        let name = input.name.trim();
+        if name.is_empty() {
+            return Err(anyhow!("Cookie at index {} has an empty name", index));
+        }
+
+        let domain = input
+            .domain
+            .as_deref()
+            .map(str::trim)
+            .filter(|d| !d.is_empty());
+        let host = match domain {
+            // A leading dot is legal in Set-Cookie but not in a URI authority.
+            Some(domain) => domain.trim_start_matches('.').to_owned(),
+            None => match input.url.as_deref() {
+                Some(url) => host_from_url(url)?,
+                None => default_host.clone().ok_or_else(|| {
+                    anyhow!(
+                        "Cookie \"{}\" has no domain. Host-only cookies lose their origin host \
+                         when exported, so pass a URL to scope them",
+                        name
+                    )
+                })?,
+            },
+        };
+
+        let path = input
+            .path
+            .as_deref()
+            .map(str::trim)
+            .filter(|path| path.starts_with('/'))
+            .unwrap_or("/");
+
+        // The jar drops a Secure cookie arriving from an insecure origin, and only a secure origin
+        // may overwrite a stored Secure cookie, so restore every cookie over https.
+        let uri: wreq::Uri = format!("https://{}{}", host, path)
+            .parse()
+            .with_context(|| format!("Cookie \"{}\" has an invalid domain or path", name))?;
+
+        let mut builder = cookie::Cookie::build((name.to_owned(), input.value.clone()))
+            .path(path.to_owned())
+            .secure(input.secure)
+            .http_only(input.http_only);
+
+        if let Some(domain) = domain {
+            builder = builder.domain(domain.to_owned());
+        }
+
+        if let Some(same_site) = input.same_site.as_deref() {
+            let same_site = match same_site.trim().to_ascii_lowercase().as_str() {
+                "lax" => cookie::SameSite::Lax,
+                "strict" => cookie::SameSite::Strict,
+                "none" => cookie::SameSite::None,
+                other => {
+                    return Err(anyhow!(
+                        "Cookie \"{}\" has an invalid sameSite value: {}",
+                        name,
+                        other
+                    ));
+                }
+            };
+            builder = builder.same_site(same_site);
+        }
+
+        if let Some(expires_at_ms) = input.expires_at_ms {
+            if !expires_at_ms.is_finite() {
+                return Err(anyhow!(
+                    "Cookie \"{}\" has a non-finite expiresAtMs value",
+                    name
+                ));
+            }
+            // f64 cannot hold epoch nanoseconds exactly, so scale the whole and fractional
+            // milliseconds separately to keep the exported timestamp to the millisecond.
+            let whole_ms = expires_at_ms.trunc();
+            let nanos =
+                (whole_ms as i128) * 1_000_000 + ((expires_at_ms - whole_ms) * 1_000_000.0) as i128;
+            let expires =
+                cookie::time::OffsetDateTime::from_unix_timestamp_nanos(nanos).map_err(|_| {
+                    anyhow!("Cookie \"{}\" has an out-of-range expiresAtMs value", name)
+                })?;
+            builder = builder.expires(expires);
+        }
+
+        prepared.push((builder.build(), uri));
+    }
+
+    let jar = SESSION_MANAGER.jar_for(session_id)?;
+    for (cookie, uri) in prepared {
+        jar.add(cookie, uri);
+    }
     Ok(())
 }
 

@@ -74,7 +74,7 @@ while (true) {
 
 ## Download with progress
 
-Track download progress:
+Track download progress from the response stream itself:
 
 ```typescript
 const response = await fetch('https://example.com/file.zip', {
@@ -111,6 +111,44 @@ for (const chunk of chunks) {
   position += chunk.byteLength;
 }
 ```
+
+## Transport-level request progress
+
+If you want progress before you start consuming `response.body`, use `onRequestEvent`.
+This gives you visibility into request start, headers, and native body download progress.
+
+```typescript
+const response = await fetch('https://example.com/file.zip', {
+  browser: 'chrome_142',
+  onRequestEvent(event) {
+    switch (event.type) {
+      case 'request_start':
+        console.log('connecting');
+        break;
+      case 'request_sent':
+        console.log('waiting for response');
+        break;
+      case 'response_headers':
+        console.log('status:', event.status);
+        console.log('length:', event.contentLength);
+        break;
+      case 'body_progress':
+        if (event.contentLength) {
+          const pct = ((event.downloadedBytes ?? 0) / event.contentLength) * 100;
+          console.log(`downloaded ${pct.toFixed(1)}%`);
+        }
+        break;
+      case 'body_complete':
+        console.log('download complete');
+        break;
+    }
+  },
+});
+
+console.log(await response.arrayBuffer());
+```
+
+For more detail on event payloads and diagnostics, see [/guides/request-events](/guides/request-events).
 
 ## Server-Sent Events (SSE)
 

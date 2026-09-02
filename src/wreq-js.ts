@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { STATUS_CODES } from "node:http";
-import { createRequire } from "node:module";
 import { Readable } from "node:stream";
 import { ReadableStream } from "node:stream/web";
+import { BROWSER_ALIASES } from "./generated-types.js";
+import { nativeRequire as require } from "./native-require.js";
 import type {
   AlpnProtocol,
   AlpsProtocol,
   BodyInit,
+  BrowserAlias,
   BrowserProfile,
   CookieMode,
   CreateSessionOptions,
@@ -18,7 +20,6 @@ import type {
   EmulationOS,
   HeadersInit,
   HeaderTuple,
-  Http2ExperimentalSetting,
   Http2Priority,
   Http2PseudoHeaderId,
   Http2SettingId,
@@ -27,7 +28,11 @@ import type {
   LegacyWebSocketOptions,
   NativeResponse,
   NativeWebSocketConnection,
+  RequestDiagnostics,
+  RequestEvent,
   RequestOptions,
+  SessionCookie,
+  SessionCookieInit,
   SessionHandle,
   SessionWebSocketOptions,
   TlsVersion,
@@ -93,11 +98,13 @@ interface NativeTransportOptions {
   proxyHeaders?: HeaderTuple[];
   insecure?: boolean;
   trustStore?: TrustStoreMode;
+  resolve?: Record<string, string | string[]>;
   poolIdleTimeout?: number;
   poolMaxIdlePerHost?: number;
   poolMaxSize?: number;
   connectTimeout?: number;
   readTimeout?: number;
+  captureDiagnostics?: boolean;
 }
 
 interface NativeRequestOptions {
@@ -119,6 +126,8 @@ interface NativeRequestOptions {
   trustStore?: TrustStoreMode;
   transportId?: string;
   compress?: boolean;
+  captureDiagnostics?: boolean;
+  onRequestEvent?: (event: RequestEvent) => void;
 }
 
 let nativeBinding: {
@@ -136,16 +145,20 @@ let nativeBinding: {
   clearSession: (sessionId: string) => void;
   dropSession: (sessionId: string) => void;
   getCookies: (sessionId: string, url: string) => Record<string, string>;
+  getAllCookies: (sessionId: string) => SessionCookie[];
   setCookie: (sessionId: string, name: string, value: string, url: string) => void;
+  setCookies: (sessionId: string, cookies: SessionCookieInit[], url?: string) => void;
   createTransport: (options: NativeTransportOptions) => string;
   dropTransport: (transportId: string) => void;
   getOperatingSystems?: () => string[];
+  getEmulationHeaders?: (browser: string, os: string) => HeaderTuple[];
 };
 
 let cachedProfiles: BrowserProfile[] | undefined;
 let cachedProfileSet: Set<string> | undefined;
 let cachedOperatingSystems: EmulationOS[] | undefined;
 let cachedOperatingSystemSet: Set<string> | undefined;
+const cachedEmulationHeaders = new Map<string, HeaderTuple[]>();
 
 function detectLibc(): "gnu" | "musl" | undefined {
   if (process.platform !== "linux") {
@@ -171,114 +184,96 @@ function detectLibc(): "gnu" | "musl" | undefined {
   }
 }
 
-const require =
-  typeof import.meta !== "undefined" && import.meta.url ? createRequire(import.meta.url) : createRequire(__filename);
+const NATIVE_PLATFORMS = [
+  "darwin-x64",
+  "darwin-arm64",
+  "linux-x64-gnu",
+  "linux-x64-musl",
+  "linux-arm64-gnu",
+  "linux-arm64-musl",
+  "win32-x64-msvc",
+  "win32-arm64-msvc",
+  "android-arm64",
+] as const;
 
-function loadNativeBinding() {
+type NativePlatform = (typeof NATIVE_PLATFORMS)[number];
+
+function resolveNativePlatform(): NativePlatform | undefined {
   const platform = process.platform;
   const arch = process.arch;
-  const libc = detectLibc();
+
+  // Termux runs Node on Android, where process.platform is "android". Its Bionic
+  // libc is neither glibc nor musl, so it is matched before the linux branches
+  // rather than routed through detectLibc().
+  if (platform === "android" && arch === "arm64") {
+    return "android-arm64";
+  }
 
   if (platform === "darwin" && arch === "x64") {
-    try {
-      return require("../rust/freq-js.darwin-x64.node");
-    } catch {
-      try {
-        return require("../rust/freq-js.node");
-      } catch {
-        throw new Error(
-          "Failed to load native module for darwin-x64. " +
-            "Tried: ../rust/freq-js.darwin-x64.node and ../rust/freq-js.node. " +
-            "Make sure the package is installed correctly and the native module is built for your platform.",
-        );
-      }
-    }
+    return "darwin-x64";
   }
 
   if (platform === "darwin" && arch === "arm64") {
-    try {
-      return require("../rust/freq-js.darwin-arm64.node");
-    } catch {
-      try {
-        return require("../rust/freq-js.node");
-      } catch {
-        throw new Error(
-          "Failed to load native module for darwin-arm64. " +
-            "Tried: ../rust/freq-js.darwin-arm64.node and ../rust/freq-js.node. " +
-            "Make sure the package is installed correctly and the native module is built for your platform.",
-        );
-      }
-    }
+    return "darwin-arm64";
   }
 
   if (platform === "linux" && arch === "x64") {
-    if (libc === "musl") {
-      try {
-        return require("../rust/freq-js.linux-x64-musl.node");
-      } catch {
-        try {
-          return require("../rust/freq-js.node");
-        } catch {
-          throw new Error(
-            "Failed to load native module for linux-x64-musl. " +
-              "Tried: ../rust/freq-js.linux-x64-musl.node and ../rust/freq-js.node. " +
-              "Make sure the package is installed correctly and the native module is built for your platform.",
-          );
-        }
-      }
-    }
-
-    try {
-      return require("../rust/freq-js.linux-x64-gnu.node");
-    } catch {
-      try {
-        return require("../rust/freq-js.node");
-      } catch {
-        throw new Error(
-          "Failed to load native module for linux-x64-gnu. " +
-            "Tried: ../rust/freq-js.linux-x64-gnu.node and ../rust/freq-js.node. " +
-            "Make sure the package is installed correctly and the native module is built for your platform.",
-        );
-      }
-    }
+    return detectLibc() === "musl" ? "linux-x64-musl" : "linux-x64-gnu";
   }
 
   if (platform === "linux" && arch === "arm64") {
-    try {
-      return require("../rust/freq-js.linux-arm64-gnu.node");
-    } catch {
-      try {
-        return require("../rust/freq-js.node");
-      } catch {
-        throw new Error(
-          "Failed to load native module for linux-arm64-gnu. " +
-            "Tried: ../rust/freq-js.linux-arm64-gnu.node and ../rust/freq-js.node. " +
-            "Make sure the package is installed correctly and the native module is built for your platform.",
-        );
-      }
-    }
+    return detectLibc() === "musl" ? "linux-arm64-musl" : "linux-arm64-gnu";
   }
 
   if (platform === "win32" && arch === "x64") {
+    return "win32-x64-msvc";
+  }
+
+  if (platform === "win32" && arch === "arm64") {
+    return "win32-arm64-msvc";
+  }
+
+  return undefined;
+}
+
+function loadNativeBinding() {
+  const target = resolveNativePlatform();
+
+  if (!target) {
+    const libc = detectLibc();
+
+    throw new Error(
+      `Unsupported platform: ${process.platform}-${process.arch}${libc ? `-${libc}` : ""}. ` +
+        `Supported platforms: ${NATIVE_PLATFORMS.join(", ")}`,
+    );
+  }
+
+  // Locally built addons win over the published platform package so that
+  // `npm run build:rust` keeps shadowing an installed binding during development.
+  const candidates = [`../rust/freq-js.${target}.node`, `@zionsssx/freq-js-${target}`, "../rust/freq-js.node"];
+
+  let notFoundError: unknown;
+  let loadError: unknown;
+
+  for (const candidate of candidates) {
     try {
-      return require("../rust/freq-js.win32-x64-msvc.node");
-    } catch {
-      try {
-        return require("../rust/freq-js.node");
-      } catch {
-        throw new Error(
-          "Failed to load native module for win32-x64-msvc. " +
-            "Tried: ../rust/freq-js.win32-x64-msvc.node and ../rust/freq-js.node. " +
-            "Make sure the package is installed correctly and the native module is built for your platform.",
-        );
+      return require(candidate);
+    } catch (error) {
+      // An addon that exists but refuses to load (ABI mismatch, missing system
+      // library) is a more useful diagnostic than the "not found" of a
+      // candidate that was never installed in the first place.
+      if ((error as NodeJS.ErrnoException | undefined)?.code === "MODULE_NOT_FOUND") {
+        notFoundError ??= error;
+      } else {
+        loadError ??= error;
       }
     }
   }
 
   throw new Error(
-    `Unsupported platform: ${platform}-${arch}${libc ? `-${libc}` : ""}. ` +
-      `Supported platforms: darwin-x64, darwin-arm64, linux-x64-gnu, linux-x64-musl, ` +
-      `linux-arm64-gnu, win32-x64-msvc`,
+    `Failed to load native module for ${target}. Tried: ${candidates.join(", ")}. ` +
+      "Make sure the package is installed correctly and the native module is built for your platform.",
+    { cause: loadError ?? notFoundError },
   );
 }
 
@@ -309,7 +304,8 @@ const bodyHandleFinalizer =
       })
     : undefined;
 
-const DEFAULT_BROWSER: BrowserProfile = "chrome_142";
+// Tracks the newest Chrome rather than pinning a version that silently goes stale.
+const DEFAULT_BROWSER: BrowserProfile = BROWSER_ALIASES.chrome;
 const DEFAULT_OS: EmulationOS = "macos";
 const DEFAULT_REQUEST_TIMEOUT_MS = 300_000;
 const DEFAULT_TRUST_STORE: TrustStoreMode = "combined";
@@ -324,6 +320,7 @@ type SessionDefaults = {
   insecure?: boolean;
   trustStore?: TrustStoreMode;
   defaultHeaders?: HeaderTuple[];
+  captureDiagnostics?: boolean;
   transportId?: string;
   ownsTransport?: boolean;
 };
@@ -342,6 +339,7 @@ type TransportResolution = {
   proxyHeaders?: HeaderTuple[];
   insecure?: boolean;
   trustStore?: TrustStoreMode;
+  captureDiagnostics?: boolean;
 };
 
 type SerializedCustomEmulation = {
@@ -432,6 +430,10 @@ function normalizeSessionOptions(options?: CreateSessionOptions): { sessionId: s
 
   if (options?.defaultHeaders !== undefined) {
     defaults.defaultHeaders = headersToTuples(options.defaultHeaders);
+  }
+
+  if (options?.captureDiagnostics !== undefined) {
+    defaults.captureDiagnostics = options.captureDiagnostics;
   }
 
   return { sessionId, defaults };
@@ -548,6 +550,12 @@ export class Headers implements Iterable<[string, string]> {
     return entry ? entry.values.join(", ") : null;
   }
 
+  getSetCookie(): string[] {
+    const entry = this.store.get("set-cookie");
+    if (!entry) return [];
+    return [...entry.values];
+  }
+
   has(name: string): boolean {
     const normalized = this.normalizeName(name);
     return this.store.has(normalized.key);
@@ -583,7 +591,13 @@ export class Headers implements Iterable<[string, string]> {
   [Symbol.iterator](): IterableIterator<[string, string]> {
     const generator = function* (store: Map<string, HeaderStoreEntry>) {
       for (const entry of store.values()) {
-        yield [entry.name, entry.values.join(", ")] as [string, string];
+        if (entry.name.toLowerCase() === "set-cookie") {
+          for (const v of entry.values) {
+            yield [entry.name, v] as [string, string];
+          }
+        } else {
+          yield [entry.name, entry.values.join(", ")] as [string, string];
+        }
       }
     };
 
@@ -593,8 +607,8 @@ export class Headers implements Iterable<[string, string]> {
   toObject(): Record<string, string> {
     const result: Record<string, string> = {};
 
-    for (const [name, value] of this) {
-      result[name] = value;
+    for (const entry of this.store.values()) {
+      result[entry.name] = entry.values.join(", ");
     }
 
     return result;
@@ -734,6 +748,7 @@ function cloneNativeResponse(payload: NativeResponse): NativeResponse {
     contentLength: payload.contentLength,
     cookies: payload.cookies.map(([name, value]): HeaderTuple => [name, value]),
     url: payload.url,
+    diagnostics: payload.diagnostics ? { ...payload.diagnostics } : null,
   };
 }
 
@@ -832,6 +847,7 @@ export class Response {
   readonly ok: boolean;
   readonly contentLength: number | null;
   readonly url: string;
+  readonly diagnostics: RequestDiagnostics | null;
   readonly type: ResponseType = "basic";
   bodyUsed = false;
 
@@ -857,6 +873,7 @@ export class Response {
     this.headersInit = this.payload.headers;
     this.headersInstance = null;
     this.url = this.payload.url;
+    this.diagnostics = this.payload.diagnostics ?? null;
     this.cookiesInit = this.payload.cookies;
     this.cookiesRecord = null;
     this.contentLength = this.payload.contentLength ?? null;
@@ -990,6 +1007,12 @@ export class Response {
     const view = new Uint8Array(byteLength);
     view.set(bytes);
     return view.buffer;
+  }
+
+  // Built on arrayBuffer() so it inherits the same zero-copy path and aliasing
+  // semantics rather than introducing a second set.
+  async bytes(): Promise<Uint8Array> {
+    return new Uint8Array(await this.arrayBuffer());
   }
 
   async text(): Promise<string> {
@@ -1147,6 +1170,10 @@ export class Transport {
       throw new RequestError(String(error));
     }
   }
+
+  async [Symbol.asyncDispose]() {
+    await this.close();
+  }
 }
 
 export class Session implements SessionHandle {
@@ -1210,10 +1237,61 @@ export class Session implements SessionHandle {
     }
   }
 
+  getAllCookies(): SessionCookie[] {
+    this.ensureActive();
+    try {
+      return nativeBinding.getAllCookies(this.id);
+    } catch (error) {
+      throw new RequestError(String(error));
+    }
+  }
+
   setCookie(name: string, value: string, url: string | URL): void {
     this.ensureActive();
     try {
       nativeBinding.setCookie(this.id, name, value, String(url));
+    } catch (error) {
+      throw new RequestError(String(error));
+    }
+  }
+
+  /**
+   * Restore a batch of cookies into the session jar, keeping every attribute.
+   *
+   * Accepts the output of {@link Session.getAllCookies} directly, which makes a cookie jar
+   * round-trip through JSON possible.
+   *
+   * Cookies that carry a `domain` scope themselves. A cookie without one is host-only, and the
+   * jar keeps its origin host internally rather than returning it, so `url` supplies the host
+   * those cookies belong to. Passing `url` is therefore required whenever the batch contains a
+   * host-only cookie.
+   *
+   * Because that host is missing from the export, a jar holding host-only cookies from several
+   * hosts cannot be restored from `url` alone — every one of them lands on the host `url` names.
+   * Set `url` on the individual cookie to place it precisely.
+   *
+   * The batch is validated before anything is stored: if one cookie is rejected the jar is left
+   * untouched. Cookies whose `expiresAtMs` is already in the past are dropped rather than stored,
+   * matching how the jar treats an expired `Set-Cookie`.
+   *
+   * @param cookies - Cookies to store
+   * @param url - Origin used to scope host-only cookies that do not carry their own `url`
+   *
+   * @example
+   * ```typescript
+   * const saved = JSON.stringify(session.getAllCookies());
+   * // ...later, in another process
+   * const restored = await createSession({ browser: 'chrome' });
+   * restored.setCookies(JSON.parse(saved), 'https://example.com');
+   * ```
+   */
+  setCookies(cookies: SessionCookieInit[], url?: string | URL): void {
+    this.ensureActive();
+    if (!Array.isArray(cookies)) {
+      throw new RequestError("setCookies expects an array of cookies");
+    }
+    try {
+      nativeBinding.setCookies(this.id, cookies, url === undefined ? undefined : String(url));
     } catch (error) {
       throw new RequestError(String(error));
     }
@@ -1303,6 +1381,10 @@ export class Session implements SessionHandle {
       }
     }
   }
+
+  async [Symbol.asyncDispose]() {
+    await this.close();
+  }
 }
 
 function resolveSessionContext(config: WreqRequestInit): SessionResolution {
@@ -1384,7 +1466,12 @@ function resolveTransportContext(config: WreqRequestInit, sessionDefaults?: Sess
       );
     }
 
-    return { transportId: config.transport.id };
+    return {
+      transportId: config.transport.id,
+      ...(config.captureDiagnostics !== undefined && {
+        captureDiagnostics: config.captureDiagnostics,
+      }),
+    };
   }
 
   if (sessionDefaults?.transportId) {
@@ -1393,10 +1480,12 @@ function resolveTransportContext(config: WreqRequestInit, sessionDefaults?: Sess
     }
 
     if (config.browser !== undefined) {
-      validateBrowserProfile(config.browser);
+      // Compare resolved profiles, so `browser: 'chrome'` matches a session created
+      // with the concrete profile that alias points at.
+      const requestedBrowser = resolveProfile(config.browser);
       const lockedBrowser =
         sessionDefaults.transportMode.kind === "custom" ? undefined : sessionDefaults.transportMode.browser;
-      if (config.browser !== lockedBrowser) {
+      if (requestedBrowser !== lockedBrowser) {
         throw new RequestError("Session browser cannot be changed after creation");
       }
     }
@@ -1441,7 +1530,11 @@ function resolveTransportContext(config: WreqRequestInit, sessionDefaults?: Sess
       }
     }
 
-    return { transportId: sessionDefaults.transportId };
+    const captureDiagnostics = config.captureDiagnostics ?? sessionDefaults.captureDiagnostics;
+    return {
+      transportId: sessionDefaults.transportId,
+      ...(captureDiagnostics !== undefined && { captureDiagnostics }),
+    };
   }
 
   const resolved: TransportResolution = {
@@ -1460,6 +1553,9 @@ function resolveTransportContext(config: WreqRequestInit, sessionDefaults?: Sess
     resolved.insecure = config.insecure;
   }
   resolved.trustStore = config.trustStore ?? DEFAULT_TRUST_STORE;
+  if (config.captureDiagnostics !== undefined) {
+    resolved.captureDiagnostics = config.captureDiagnostics;
+  }
   return resolved;
 }
 
@@ -1690,8 +1786,46 @@ async function serializeBody(body?: BodyInit | null): Promise<SerializedBody> {
     return { body: buffer, ...(contentType ? { contentType } : {}) };
   }
 
+  // Kept below the concrete branches on purpose: URLSearchParams and FormData are both
+  // iterable, and matching them here would lose their Content-Type.
+  //
+  // The native layer takes a single Buffer, so stream bodies are buffered rather than
+  // streamed. Duck-typed rather than `instanceof ReadableStream` because the class
+  // imported here is node:stream/web's, which would miss streams from another realm.
+  if (typeof (body as ReadableStream<Uint8Array>).getReader === "function") {
+    const reader = (body as ReadableStream<Uint8Array>).getReader();
+    const chunks: Uint8Array[] = [];
+
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      chunks.push(value);
+    }
+
+    return { body: Buffer.concat(chunks) };
+  }
+
+  if (
+    typeof (body as AsyncIterable<Uint8Array>)[Symbol.asyncIterator] === "function" ||
+    typeof (body as Iterable<Uint8Array>)[Symbol.iterator] === "function"
+  ) {
+    const chunks: Uint8Array[] = [];
+
+    // `for await` iterates sync iterables too, so one branch covers both.
+    for await (const chunk of body as AsyncIterable<Uint8Array>) {
+      if (!ArrayBuffer.isView(chunk)) {
+        throw new TypeError("Iterable request bodies must yield Uint8Array chunks");
+      }
+      chunks.push(chunk);
+    }
+
+    return { body: Buffer.concat(chunks) };
+  }
+
   throw new TypeError(
-    "Unsupported body type; expected string, Buffer, ArrayBuffer, ArrayBufferView, URLSearchParams, Blob, or FormData",
+    "Unsupported body type; expected string, Buffer, ArrayBuffer, ArrayBufferView, URLSearchParams, Blob, FormData, ReadableStream, or an iterable of Uint8Array",
   );
 }
 
@@ -1726,7 +1860,7 @@ function ensureBodyAllowed(method: string, body?: Buffer): void {
   }
 }
 
-function validateBrowserProfile(browser?: BrowserProfile | string): void {
+function validateBrowserProfile(browser?: BrowserProfile | BrowserAlias | string): void {
   if (browser === undefined) {
     return;
   }
@@ -1735,8 +1869,11 @@ function validateBrowserProfile(browser?: BrowserProfile | string): void {
     throw new RequestError("Browser profile must not be empty");
   }
 
-  if (!getProfileSet().has(browser)) {
-    throw new RequestError(`Invalid browser profile: ${browser}. Available profiles: ${getProfiles().join(", ")}`);
+  // Object.hasOwn, not `in`, so inherited keys like "toString" are not treated as aliases.
+  if (!getProfileSet().has(browser) && !Object.hasOwn(BROWSER_ALIASES, browser)) {
+    throw new RequestError(
+      `Invalid browser profile: ${browser}. Available aliases: ${Object.keys(BROWSER_ALIASES).join(", ")}. Available profiles: ${getProfiles().join(", ")}`,
+    );
   }
 }
 
@@ -1808,6 +1945,26 @@ function validatePositiveInteger(value: number, label: string): void {
   }
 }
 
+function validateResolve(resolve: unknown): void {
+  if (typeof resolve !== "object" || resolve === null || Array.isArray(resolve)) {
+    throw new RequestError("resolve must be an object mapping hosts to addresses");
+  }
+
+  for (const [host, value] of Object.entries(resolve)) {
+    const addresses = Array.isArray(value) ? value : [value];
+
+    if (addresses.length === 0) {
+      throw new RequestError(`resolve['${host}'] must provide at least one address`);
+    }
+
+    for (const address of addresses) {
+      if (typeof address !== "string" || address.trim() === "") {
+        throw new RequestError(`resolve['${host}'] addresses must be non-empty strings`);
+      }
+    }
+  }
+}
+
 function validateIntegerInRange(value: number, min: number, max: number, label: string): void {
   validateNonNegativeInteger(value, label);
   if (value < min || value > max) {
@@ -1829,8 +1986,6 @@ const HTTP2_SETTING_IDS = new Set<Http2SettingId>([
   "NoRfc7540Priorities",
 ]);
 const HTTP2_PSEUDO_HEADER_IDS = new Set<Http2PseudoHeaderId>(["Method", "Scheme", "Authority", "Path", "Protocol"]);
-const STANDARD_HTTP2_SETTING_ID_VALUES = new Set([1, 2, 3, 4, 5, 6, 8, 9]);
-const MAX_HTTP2_EXPERIMENTAL_SETTING_ID = 15;
 const TLS_VERSION_ALIASES = new Map<string, "1.0" | "1.1" | "1.2" | "1.3">([
   ["1.0", "1.0"],
   ["1.1", "1.1"],
@@ -2009,11 +2164,6 @@ function normalizeCustomTlsOptions(options: CustomTlsOptions | undefined): Custo
   if (options.recordSizeLimit !== undefined) {
     validateIntegerInRange(options.recordSizeLimit, 0, 65535, "emulation.tlsOptions.recordSizeLimit");
     normalized.recordSizeLimit = options.recordSizeLimit;
-  }
-
-  if (options.keySharesLimit !== undefined) {
-    validateIntegerInRange(options.keySharesLimit, 0, 255, "emulation.tlsOptions.keySharesLimit");
-    normalized.keySharesLimit = options.keySharesLimit;
   }
 
   if (options.certificateCompressionAlgorithms !== undefined) {
@@ -2287,51 +2437,6 @@ function normalizeCustomHttp2Options(options: CustomHttp2Options | undefined): C
     normalized.priorities = priorities;
   }
 
-  if (options.experimentalSettings !== undefined) {
-    if (!Array.isArray(options.experimentalSettings)) {
-      throw new RequestError("emulation.http2Options.experimentalSettings must be an array");
-    }
-
-    const experimentalSettings: Http2ExperimentalSetting[] = [];
-    const seenIds = new Set<number>();
-
-    for (const [index, setting] of options.experimentalSettings.entries()) {
-      if (!isPlainObject(setting)) {
-        throw new RequestError(`emulation.http2Options.experimentalSettings[${index}] must be an object`);
-      }
-
-      validateIntegerInRange(
-        setting.id,
-        1,
-        MAX_HTTP2_EXPERIMENTAL_SETTING_ID,
-        `emulation.http2Options.experimentalSettings[${index}].id`,
-      );
-      if (STANDARD_HTTP2_SETTING_ID_VALUES.has(setting.id)) {
-        throw new RequestError(
-          `emulation.http2Options.experimentalSettings[${index}].id must not be a standard HTTP/2 setting id`,
-        );
-      }
-      if (seenIds.has(setting.id)) {
-        throw new RequestError(`Duplicate emulation.http2Options.experimentalSettings id: ${setting.id}`);
-      }
-      seenIds.add(setting.id);
-
-      validateIntegerInRange(
-        setting.value,
-        0,
-        0xffffffff,
-        `emulation.http2Options.experimentalSettings[${index}].value`,
-      );
-
-      experimentalSettings.push({
-        id: setting.id,
-        value: setting.value,
-      });
-    }
-
-    normalized.experimentalSettings = experimentalSettings;
-  }
-
   return isNonEmpty(normalized) ? normalized : undefined;
 }
 
@@ -2395,12 +2500,14 @@ function serializeCustomEmulationOptions(
 }
 
 function resolveEmulationMode(
-  browser: BrowserProfile | undefined,
+  browser: BrowserProfile | BrowserAlias | undefined,
   os: EmulationOS | undefined,
   emulation: CustomEmulationOptions | undefined,
 ): ResolvedEmulationMode {
   if (browser !== undefined) {
-    validateBrowserProfile(browser);
+    // Resolve here so aliases never reach the native layer, where an unrecognized
+    // profile silently falls back to Chrome instead of failing.
+    const resolvedBrowser = resolveProfile(browser);
     if (os !== undefined) {
       validateOperatingSystem(os);
     }
@@ -2408,7 +2515,7 @@ function resolveEmulationMode(
     const emulationJson = serializeCustomEmulationOptions(emulation, true);
     return {
       kind: "preset",
-      browser,
+      browser: resolvedBrowser,
       os: os ?? DEFAULT_OS,
       ...(emulationJson !== undefined && { emulationJson }),
     };
@@ -2591,6 +2698,13 @@ export async function fetch(input: string | URL | Request, init?: WreqRequestIni
     requestOptions.body = body;
   }
 
+  if (transport.captureDiagnostics !== undefined) {
+    requestOptions.captureDiagnostics = transport.captureDiagnostics;
+  }
+  if (config.onRequestEvent !== undefined) {
+    requestOptions.onRequestEvent = config.onRequestEvent;
+  }
+
   if (transport.transportId) {
     requestOptions.transportId = transport.transportId;
   } else {
@@ -2633,6 +2747,10 @@ export async function createTransport(options?: CreateTransportOptions): Promise
   const mode = resolveEmulationMode(options?.browser, options?.os, options?.emulation);
   validateTrustStore(options?.trustStore);
 
+  if (options?.resolve !== undefined) {
+    validateResolve(options.resolve);
+  }
+
   if (options?.poolIdleTimeout !== undefined) {
     validatePositiveNumber(options.poolIdleTimeout, "poolIdleTimeout");
   }
@@ -2656,11 +2774,15 @@ export async function createTransport(options?: CreateTransportOptions): Promise
       ...(proxyHeaders !== undefined && { proxyHeaders }),
       ...(options?.insecure !== undefined && { insecure: options.insecure }),
       trustStore: options?.trustStore ?? DEFAULT_TRUST_STORE,
+      ...(options?.resolve !== undefined && { resolve: options.resolve }),
       ...(options?.poolIdleTimeout !== undefined && { poolIdleTimeout: options.poolIdleTimeout }),
       ...(options?.poolMaxIdlePerHost !== undefined && { poolMaxIdlePerHost: options.poolMaxIdlePerHost }),
       ...(options?.poolMaxSize !== undefined && { poolMaxSize: options.poolMaxSize }),
       ...(options?.connectTimeout !== undefined && { connectTimeout: options.connectTimeout }),
       ...(options?.readTimeout !== undefined && { readTimeout: options.readTimeout }),
+      ...(options?.captureDiagnostics !== undefined && {
+        captureDiagnostics: options.captureDiagnostics,
+      }),
     };
     applyNativeEmulationMode(transportOptions, mode);
 
@@ -2684,6 +2806,9 @@ export async function createSession(options?: CreateSessionOptions): Promise<Ses
       ...(defaults.proxyHeaders !== undefined && { proxyHeaders: defaults.proxyHeaders }),
       ...(defaults.insecure !== undefined && { insecure: defaults.insecure }),
       trustStore: defaults.trustStore ?? DEFAULT_TRUST_STORE,
+      ...(defaults.captureDiagnostics !== undefined && {
+        captureDiagnostics: defaults.captureDiagnostics,
+      }),
     };
     applyNativeEmulationMode(transportOptions, defaults.transportMode);
     transportId = nativeBinding.createTransport(transportOptions);
@@ -2809,6 +2934,14 @@ export async function request(options: RequestOptions): Promise<Response> {
     init.cookieMode = "ephemeral";
   }
 
+  if (legacy.onRequestEvent !== undefined) {
+    init.onRequestEvent = legacy.onRequestEvent;
+  }
+
+  if (legacy.captureDiagnostics !== undefined) {
+    init.captureDiagnostics = legacy.captureDiagnostics;
+  }
+
   return fetch(url, init);
 }
 
@@ -2861,6 +2994,83 @@ function getOperatingSystemSet(): Set<string> {
   }
 
   return cachedOperatingSystemSet;
+}
+
+/**
+ * Resolve a browser family alias to the concrete profile it points at.
+ *
+ * Concrete profiles pass through unchanged, so this is safe to call on any value
+ * accepted by the `browser` option.
+ *
+ * Aliases track the newest profile shipped with the installed version of this library,
+ * so the result moves when you upgrade. Log it if you need to know which fingerprint a
+ * given run used.
+ *
+ * @param browser - A browser profile or family alias
+ * @returns The concrete browser profile
+ *
+ * @example
+ * ```typescript
+ * import { resolveProfile } from 'wreq-js';
+ *
+ * resolveProfile('firefox');     // 'firefox_149'
+ * resolveProfile('firefox_143'); // 'firefox_143'
+ * ```
+ */
+export function resolveProfile(browser: BrowserProfile | BrowserAlias): BrowserProfile {
+  validateBrowserProfile(browser);
+
+  return Object.hasOwn(BROWSER_ALIASES, browser)
+    ? BROWSER_ALIASES[browser as BrowserAlias]
+    : (browser as BrowserProfile);
+}
+
+/**
+ * Get the headers a browser profile injects into every request, without sending one.
+ *
+ * Returns the emulation's own headers in profile order and original casing. Pass any of
+ * these back through `headers` to override them for a request; the rest of the profile
+ * stays intact.
+ *
+ * @param browser - Browser profile or family alias to inspect (defaults to the same profile as {@link fetch})
+ * @param os - Operating system to emulate (defaults to the same OS as {@link fetch})
+ * @returns A {@link Headers} instance holding the profile's default headers
+ *
+ * @example
+ * ```typescript
+ * import { fetch, getEmulationHeaders } from 'wreq-js';
+ *
+ * const defaults = getEmulationHeaders('firefox_147');
+ * const userAgent = defaults.get('user-agent');
+ *
+ * // Reuse the profile's User-Agent while sending your own headers
+ * await fetch('https://example.com', {
+ *   browser: 'firefox_147',
+ *   headers: { 'X-Client': `proxy (${userAgent})` },
+ * });
+ * ```
+ */
+export function getEmulationHeaders(browser?: BrowserProfile | BrowserAlias, os?: EmulationOS): Headers {
+  validateOperatingSystem(os);
+
+  const resolvedBrowser = browser === undefined ? DEFAULT_BROWSER : resolveProfile(browser);
+  const resolvedOs = os ?? DEFAULT_OS;
+  const cacheKey = `${resolvedBrowser} ${resolvedOs}`;
+
+  let tuples = cachedEmulationHeaders.get(cacheKey);
+  if (!tuples) {
+    const readEmulationHeaders = nativeBinding.getEmulationHeaders;
+    if (!readEmulationHeaders) {
+      throw new RequestError("getEmulationHeaders is not available in this build of the native addon");
+    }
+
+    // Emulation headers are fixed per profile, so resolve the emulation once.
+    tuples = readEmulationHeaders(resolvedBrowser, resolvedOs);
+    cachedEmulationHeaders.set(cacheKey, tuples);
+  }
+
+  // Fresh instance per call - callers must not be able to mutate the cache.
+  return new Headers(tuples);
 }
 
 /**
@@ -3751,6 +3961,10 @@ export class WebSocket {
     this.readyState = WebSocket.CLOSING;
     this.startNativeClose();
   }
+
+  [Symbol.dispose]() {
+    this.close();
+  }
 }
 
 function isInternalWebSocketInit(value: unknown): value is InternalWebSocketInit {
@@ -3855,6 +4069,7 @@ export type {
   AlpnProtocol,
   AlpsProtocol,
   BodyInit,
+  BrowserAlias,
   BrowserProfile,
   CookieMode,
   CreateSessionOptions,
@@ -3865,13 +4080,17 @@ export type {
   CustomTlsOptions,
   EmulationOS,
   HeadersInit,
-  Http2ExperimentalSetting,
   Http2Priority,
   Http2PseudoHeaderId,
   Http2SettingId,
   Http2StreamDependency,
+  RequestDiagnostics,
+  RequestEvent,
+  RequestEventType,
   RequestInit,
   RequestOptions,
+  SessionCookie,
+  SessionCookieInit,
   SessionHandle,
   SessionWebSocketOptions,
   TlsVersion,

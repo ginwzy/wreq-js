@@ -86,6 +86,84 @@ const mobileResponse = await fetch('https://example.com', {
 
 ---
 
+## resolveProfile()
+
+Resolve a browser family alias to the concrete profile it points at.
+
+### Signature
+
+```typescript
+function resolveProfile(browser: BrowserProfile | BrowserAlias): BrowserProfile
+```
+
+### Returns
+
+The concrete profile. Concrete profiles pass through unchanged, so this is safe to call on
+any value accepted by the `browser` option.
+
+### Example
+
+```typescript
+import { resolveProfile } from 'wreq-js';
+
+resolveProfile('firefox');     // 'firefox_149'
+resolveProfile('firefox_143'); // 'firefox_143'
+```
+
+An alias resolves against the profile set shipped with your installed version of wreq-js,
+so the result moves when you upgrade. Log it when you need to know which fingerprint a
+given run actually used.
+
+---
+
+## getEmulationHeaders()
+
+Get the headers a browser profile injects into every request, without sending one.
+
+### Signature
+
+```typescript
+function getEmulationHeaders(browser?: BrowserProfile, os?: EmulationOS): Headers
+```
+
+Both arguments default to the same profile and OS as [`fetch`](/api-reference/fetch).
+
+### Returns
+
+A `Headers` instance holding the profile's headers, in the profile's own order and casing.
+
+Transport-level headers are not included: `Host`, `Connection`, `Content-Length`, and
+`Accept-Encoding` are added per request rather than by the emulation profile.
+
+### Example
+
+```typescript
+import { getEmulationHeaders } from 'wreq-js';
+
+const defaults = getEmulationHeaders('firefox_147');
+console.log(defaults.get('user-agent'));
+// Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:147.0) Gecko/20100101 Firefox/147.0
+```
+
+### Reusing a profile's User-Agent
+
+Passing a header through `headers` replaces the profile's matching header and leaves the
+rest of the fingerprint intact, so read the value first when you want to build on it.
+
+```typescript
+import { fetch, getEmulationHeaders } from 'wreq-js';
+
+const userAgent = getEmulationHeaders('firefox_147', 'windows').get('user-agent');
+
+const response = await fetch('https://example.com', {
+  browser: 'firefox_147',
+  os: 'windows',
+  headers: { 'X-Forwarded-User-Agent': userAgent ?? '' },
+});
+```
+
+---
+
 ## Headers
 
 The `Headers` class for working with HTTP headers.
@@ -148,6 +226,7 @@ The `Response` class representing HTTP responses.
 - `json()`: parse body as JSON
 - `text()`: get body as string
 - `arrayBuffer()`: get body as ArrayBuffer
+- `bytes()`: get body as Uint8Array
 - `blob()`: get body as Blob
 - `formData()`: parse body as FormData
 - `clone()`: clone the response

@@ -160,7 +160,6 @@ All 26 fields that control the TLS ClientHello fingerprint.
 | `enableSignedCertTimestamps` | `boolean` | Advertise SCT (Signed Certificate Timestamps) support. |
 | `recordSizeLimit` | `number` | TLS record size limit extension value. Integer in range 0--65535. |
 | `pskSkipSessionTicket` | `boolean` | Skip session ticket when using PSK. |
-| `keySharesLimit` | `number` | Maximum number of key shares to send. Integer in range 0--255. |
 | `pskDheKe` | `boolean` | Enable PSK with (EC)DHE key exchange mode. |
 | `renegotiation` | `boolean` | Enable TLS renegotiation support. |
 | `delegatedCredentials` | `string` | Delegated credentials signature algorithms string (e.g., `"ecdsa_secp256r1_sha256,ecdsa_secp384r1_sha384,ecdsa_secp521r1_sha512,ecdsa_sha1"`). Used by Firefox. |
@@ -220,7 +219,6 @@ All 23 fields for HTTP/2 framing and settings configuration.
 | `headersPseudoOrder` | `Http2PseudoHeaderId[]` | Ordering of HTTP/2 pseudo-headers (`:method`, `:scheme`, etc.) in HEADERS frames. See [Http2PseudoHeaderId](#http2pseudoheaderid). |
 | `headersStreamDependency` | `Http2StreamDependency` | Stream dependency for HEADERS frames (RFC 7540 priority). |
 | `priorities` | `Http2Priority[]` | Explicit PRIORITY frames to send after connection setup. Each `streamId` must be unique and greater than 0. |
-| `experimentalSettings` | `Http2ExperimentalSetting[]` | Non-standard SETTINGS entries. Each `id` must be in range 1--15 and must NOT be a standard HTTP/2 setting ID. Duplicates are rejected. |
 
 ---
 
@@ -244,17 +242,6 @@ interface Http2Priority {
   dependency: Http2StreamDependency;  // Dependency and weight for this stream
 }
 ```
-
-#### `Http2ExperimentalSetting`
-
-```typescript
-interface Http2ExperimentalSetting {
-  id: number;     // Setting ID (1-15, must NOT be a standard HTTP/2 setting)
-  value: number;  // Setting value (unsigned 32-bit integer)
-}
-```
-
-Standard setting IDs that are **not allowed** in `experimentalSettings`: 1 (`HeaderTableSize`), 2 (`EnablePush`), 3 (`MaxConcurrentStreams`), 4 (`InitialWindowSize`), 5 (`MaxFrameSize`), 6 (`MaxHeaderListSize`), 8 (`EnableConnectProtocol`), 9 (`NoRfc7540Priorities`).
 
 #### `Http2SettingId`
 
@@ -332,7 +319,6 @@ const response = await fetch("https://example.com", {
       enableOcspStapling: true,
       enableSignedCertTimestamps: true,
       pskSkipSessionTicket: true,
-      keySharesLimit: 2,
       pskDheKe: true,
       curvesList: "X25519MLKEM768:X25519:P-256:P-384",
       cipherList:

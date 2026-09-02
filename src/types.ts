@@ -1,8 +1,8 @@
 // Import and re-export the auto-generated BrowserProfile and EmulationOS types
-import type { BrowserProfile, EmulationOS } from "./generated-types.js";
+import type { BrowserAlias, BrowserProfile, EmulationOS } from "./generated-types.js";
 import type { Session, Transport, WebSocket } from "./wreq-js.js";
 
-export type { BrowserProfile, EmulationOS };
+export type { BrowserAlias, BrowserProfile, EmulationOS };
 
 /**
  * Controls how cookies are scoped for a request.
@@ -17,6 +17,47 @@ export type CookieMode = "session" | "ephemeral";
  */
 export interface SessionHandle {
   readonly id: string;
+}
+
+export interface SessionCookie {
+  name: string;
+  value: string;
+  domain?: string;
+  path?: string;
+  secure: boolean;
+  httpOnly: boolean;
+  sameSite?: "lax" | "strict" | "none";
+  expiresAtMs?: number;
+}
+
+/**
+ * A cookie accepted by {@link Session.setCookies}. Every {@link SessionCookie}
+ * returned by {@link Session.getAllCookies} is a valid input, so an exported jar
+ * can be handed straight back.
+ */
+export interface SessionCookieInit {
+  name: string;
+  value: string;
+  /**
+   * Domain the cookie is scoped to, with or without a leading dot. When omitted the
+   * cookie is host-only and {@link Session.setCookies} needs a URL to scope it.
+   */
+  domain?: string;
+  /** @default "/" */
+  path?: string;
+  /** @default false */
+  secure?: boolean;
+  /** @default false */
+  httpOnly?: boolean;
+  sameSite?: "lax" | "strict" | "none";
+  /** Absolute expiry in milliseconds since the epoch. Omit for a session cookie. */
+  expiresAtMs?: number;
+  /**
+   * Origin for this cookie alone, overriding the URL passed to {@link Session.setCookies}.
+   * Only consulted for host-only cookies (those without a `domain`), and the way to restore a
+   * jar holding host-only cookies from more than one host.
+   */
+  url?: string;
 }
 
 /**
@@ -60,6 +101,26 @@ export type TlsVersion = "1.0" | "1.1" | "1.2" | "1.3" | "TLS1.0" | "TLS1.1" | "
 export type Http2PseudoHeaderId = "Method" | "Scheme" | "Authority" | "Path" | "Protocol";
 export type TrustStoreMode = "combined" | "mozilla" | "defaultPaths";
 
+/**
+ * Overrides DNS resolution for specific hosts.
+ *
+ * Each key is a hostname and each value is one address, or an array of fallback addresses,
+ * written as `ip` or `ip:port`. Following reqwest/wreq semantics the port is optional and ignored,
+ * the request URL's port is always used.
+ *
+ * Useful for pinning a host to an address you have already resolved and vetted
+ * (for example to enforce SSRF protection), split-horizon DNS, or testing
+ * against a local server under a real hostname.
+ *
+ * @example
+ * ```typescript
+ * const transport = await createTransport({
+ *   resolve: { "example.com": "93.184.216.34" },
+ * });
+ * ```
+ */
+export type ResolveMap = Record<string, string | string[]>;
+
 export type Http2SettingId =
   | "HeaderTableSize"
   | "EnablePush"
@@ -81,11 +142,6 @@ export interface Http2Priority {
   dependency: Http2StreamDependency;
 }
 
-export interface Http2ExperimentalSetting {
-  id: number;
-  value: number;
-}
-
 export interface CustomTlsOptions {
   alpnProtocols?: AlpnProtocol[];
   alpsProtocols?: AlpsProtocol[];
@@ -101,7 +157,6 @@ export interface CustomTlsOptions {
   enableSignedCertTimestamps?: boolean;
   recordSizeLimit?: number;
   pskSkipSessionTicket?: boolean;
-  keySharesLimit?: number;
   pskDheKe?: boolean;
   renegotiation?: boolean;
   delegatedCredentials?: string;
@@ -149,7 +204,6 @@ export interface CustomHttp2Options {
   headersPseudoOrder?: Http2PseudoHeaderId[];
   headersStreamDependency?: Http2StreamDependency;
   priorities?: Http2Priority[];
-  experimentalSettings?: Http2ExperimentalSetting[];
 }
 
 export interface CustomEmulationOptions {
@@ -177,9 +231,22 @@ export interface CustomEmulationOptions {
  *
  * // FormData
  * const body: BodyInit = new FormData();
+ *
+ * // ReadableStream (buffered before sending, not streamed)
+ * const body: BodyInit = stream;
  * ```
  */
-export type BodyInit = string | ArrayBuffer | ArrayBufferView | URLSearchParams | Buffer | Blob | FormData;
+export type BodyInit =
+  | string
+  | ArrayBuffer
+  | ArrayBufferView
+  | URLSearchParams
+  | Buffer
+  | Blob
+  | FormData
+  | ReadableStream<Uint8Array>
+  | AsyncIterable<Uint8Array>
+  | Iterable<Uint8Array>;
 
 /**
  * Details about why a WebSocket connection closed.
@@ -250,6 +317,35 @@ export interface WebSocketCloseEvent {
  * };
  * ```
  */
+export type RequestEventType =
+  | "request_start"
+  | "request_sent"
+  | "response_headers"
+  | "body_progress"
+  | "body_complete"
+  | "done"
+  | "error";
+
+export interface RequestEvent {
+  type: RequestEventType;
+  timestamp: number;
+  status?: number;
+  url?: string;
+  contentLength?: number | null;
+  downloadedBytes?: number;
+  message?: string;
+}
+
+export interface RequestDiagnostics {
+  totalDurationMs?: number;
+  headersDurationMs?: number;
+  status?: number;
+  localAddr?: string;
+  remoteAddr?: string;
+  tlsPeerCertificatePresent?: boolean;
+  tlsPeerCertificateChainLength?: number;
+}
+
 export interface RequestInit {
   /**
    * A string to set request's method.
@@ -264,8 +360,18 @@ export interface RequestInit {
 
   /**
    * A BodyInit object or null to set request's body.
+   *
+   * Stream and iterable bodies are read fully into memory before the request is sent,
+   * so an unbounded stream means an unbounded allocation.
    */
   body?: BodyInit | null;
+
+  /**
+   * Accepted for compatibility with the Fetch API, where it is required alongside a
+   * stream body. Stream bodies are buffered here, which satisfies half-duplex on its
+   * own, so this option has no effect.
+   */
+  duplex?: "half";
 
   /**
    * An AbortSignal to set request's signal.
@@ -289,9 +395,12 @@ export interface RequestInit {
    * Browser profile to impersonate for this request.
    * Applies browser profile behavior handled by the native layer.
    * Ignored when `transport` is provided.
-   * @default 'chrome_142'
+   *
+   * Accepts a concrete profile ('firefox_149') or a family alias ('firefox'),
+   * which resolves to the newest profile in that family.
+   * @default 'chrome'
    */
-  browser?: BrowserProfile;
+  browser?: BrowserProfile | BrowserAlias;
 
   /**
    * Operating system to emulate for this request.
@@ -393,6 +502,17 @@ export interface RequestInit {
    * @default true
    */
   compress?: boolean;
+
+  /**
+   * Optional callback for structured request lifecycle events emitted by the
+   * native bridge.
+   */
+  onRequestEvent?: (event: RequestEvent) => void;
+
+  /**
+   * Capture a final diagnostics payload where supported by the native layer.
+   */
+  captureDiagnostics?: boolean;
 }
 
 /**
@@ -410,9 +530,12 @@ export interface CreateSessionOptions {
   defaultHeaders?: HeadersInit;
 
   /**
-   * Browser profile to bind to this session. Defaults to 'chrome_142'.
+   * Browser profile to bind to this session. Defaults to 'chrome'.
+   *
+   * Accepts a concrete profile ('firefox_149') or a family alias ('firefox'),
+   * which resolves to the newest profile in that family.
    */
-  browser?: BrowserProfile;
+  browser?: BrowserProfile | BrowserAlias;
 
   /**
    * Operating system to bind to this session. Defaults to 'macos'.
@@ -458,6 +581,11 @@ export interface CreateSessionOptions {
    * @default "combined"
    */
   trustStore?: TrustStoreMode;
+
+  /**
+   * Enable extra connection/TLS diagnostics for requests made through this session.
+   */
+  captureDiagnostics?: boolean;
 }
 
 /**
@@ -477,8 +605,11 @@ export interface CreateTransportOptions {
 
   /**
    * Browser profile to impersonate for this transport.
+   *
+   * Accepts a concrete profile ('firefox_149') or a family alias ('firefox'),
+   * which resolves to the newest profile in that family.
    */
-  browser?: BrowserProfile;
+  browser?: BrowserProfile | BrowserAlias;
 
   /**
    * Operating system to emulate for this transport.
@@ -500,6 +631,11 @@ export interface CreateTransportOptions {
    * @default "combined"
    */
   trustStore?: TrustStoreMode;
+
+  /**
+   * Override DNS resolution for specific hosts. See {@link ResolveMap}.
+   */
+  resolve?: ResolveMap;
 
   /**
    * Idle timeout for pooled connections (ms).
@@ -525,6 +661,11 @@ export interface CreateTransportOptions {
    * Read timeout (ms).
    */
   readTimeout?: number;
+
+  /**
+   * Enable extra connection/TLS diagnostics for requests made through this transport.
+   */
+  captureDiagnostics?: boolean;
 }
 
 /**
@@ -557,9 +698,12 @@ export interface RequestOptions {
   /**
    * Browser profile to impersonate.
    * Applies browser profile behavior handled by the native layer.
-   * @default 'chrome_142'
+   *
+   * Accepts a concrete profile ('firefox_149') or a family alias ('firefox'),
+   * which resolves to the newest profile in that family.
+   * @default 'chrome'
    */
-  browser?: BrowserProfile;
+  browser?: BrowserProfile | BrowserAlias;
 
   /**
    * Operating system to emulate.
@@ -678,6 +822,17 @@ export interface RequestOptions {
    * @default "combined"
    */
   trustStore?: TrustStoreMode;
+
+  /**
+   * Optional callback for structured request lifecycle events emitted by the
+   * native bridge.
+   */
+  onRequestEvent?: (event: RequestEvent) => void;
+
+  /**
+   * Capture a final diagnostics payload where supported by the native layer.
+   */
+  captureDiagnostics?: boolean;
 }
 
 /**
@@ -726,6 +881,11 @@ export interface NativeResponse {
    * If no redirects occurred, this will match the original request URL.
    */
   url: string;
+
+  /**
+   * Optional diagnostics payload collected by the native layer.
+   */
+  diagnostics?: RequestDiagnostics | null;
 }
 
 /**
@@ -748,9 +908,12 @@ export interface WebSocketOptions {
   /**
    * Browser profile to impersonate for the WebSocket upgrade request.
    * Automatically applies browser-specific headers and TLS fingerprints.
-   * @default 'chrome_142'
+   *
+   * Accepts a concrete profile ('firefox_149') or a family alias ('firefox'),
+   * which resolves to the newest profile in that family.
+   * @default 'chrome'
    */
-  browser?: BrowserProfile;
+  browser?: BrowserProfile | BrowserAlias;
 
   /**
    * Operating system to emulate for the WebSocket handshake.

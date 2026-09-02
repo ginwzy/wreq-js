@@ -46,7 +46,7 @@
           },
           {
             "group": "Guides",
-            "pages": ["guides/proxy-usage", "guides/streaming", "guides/websockets"]
+            "pages": ["guides/proxy-usage", "guides/streaming", "guides/request-events", "guides/websockets"]
           }
         ]
       },
